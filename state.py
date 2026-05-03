@@ -34,9 +34,11 @@ class JourneyState:
             f"Journey type: {self.journey_type or 'Not set'}",
             f"Departure date: {self.depart_date or 'Not set'}",
             f"Departure time preference: {self.depart_time_pref or 'Not set'}",
-            f"Return date: {self.return_date or 'Not set'}",
-            f"Return time preference: {self.return_time_pref or 'Not set'}",
         ]
+
+        if self.journey_type == "return":
+            parts.append(f"Return date: {self.return_date or 'Not set'}")
+            parts.append(f"Return time preference: {self.return_time_pref or 'Not set'}")
 
         if self.duration_options:
             parts.append(f"Possible trip durations: {self.duration_options}")

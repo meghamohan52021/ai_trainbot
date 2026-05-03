@@ -1,4 +1,6 @@
 import re
+
+from matplotlib import dates
 from llm_client import LLMClient
 from station_data import STATION_ALIASES
 
@@ -60,10 +62,22 @@ class LLMParser:
             "duration_options": [],
         }
 
-        if "return" in text_lower or "come back" in text_lower or "round trip" in text_lower:
+        if (
+            "return" in text_lower
+            or "come back" in text_lower
+            or "round trip" in text_lower
+            or "round-trip" in text_lower
+        ):
             extracted["journey_type"] = "return"
-        elif "single" in text_lower or "one way" in text_lower:
+
+        elif (
+            "single" in text_lower
+            or "one way" in text_lower
+            or "one-way" in text_lower
+            or "oneway" in text_lower
+        ):
             extracted["journey_type"] = "single"
+
 
         from_to_match = re.search(
             r"from\s+([a-zA-Z\s]+?)\s+to\s+([a-zA-Z\s]+)",
@@ -87,11 +101,26 @@ class LLMParser:
 
         dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", text_lower)
 
-        if len(dates) >= 1:
-            extracted["depart_date"] = dates[0]
-
         if len(dates) >= 2:
+            extracted["depart_date"] = dates[0]
             extracted["return_date"] = dates[1]
+
+        elif len(dates) == 1:
+            only_date = dates[0]
+
+            # If bot has already collected departure date,
+            # and this is a return journey,
+            # then the next single date should be treated as return date.
+        if (
+            current_state.get("journey_type") == "return"
+            and current_state.get("depart_date") not in (None, "", [])
+            and current_state.get("return_date") in (None, "", [])
+        ):
+            extracted["return_date"] = only_date
+
+        else:
+            extracted["depart_date"] = only_date
+            
 
         before_match = re.search(r"before\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", text_lower)
         after_match = re.search(r"after\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", text_lower)
