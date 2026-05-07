@@ -139,7 +139,6 @@ small, .stTextInput + small {{
     overflow-y: auto;
     scrollbar-width: thin;
     scrollbar-color: rgba(255,255,255,0.07) transparent;
-    justify-content: flex-end;
 }}
 .chat-spacer {{ flex: 1; }}
 
@@ -525,9 +524,15 @@ else:
                 <div class="msg-user">{text}</div>
             </div>'''
 
-    st.markdown(f'<div class="chat-container">{messages_html}</div>', unsafe_allow_html=True)
+    st.markdown(f'''
+<div class="chat-container" id="chat-box">{messages_html}</div>
+<script>
+  var c = document.getElementById("chat-box");
+  if (c) c.scrollTop = c.scrollHeight;
+</script>
+''', unsafe_allow_html=True)
 
-    # Reset link — clicking sets a query param, JS handles it
+    # Reset link - clicking sets a query param, JS handles it
     st.markdown('''
     <div class="input-meta">
         <a class="reset-label" href="?reset=1">reset</a>

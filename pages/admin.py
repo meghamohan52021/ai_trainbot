@@ -221,7 +221,7 @@ if "admin_authed" not in st.session_state:
 
 if not st.session_state.admin_authed:
     st.markdown('<div class="admin-title">TrainBot</div>', unsafe_allow_html=True)
-    st.markdown('<div class="admin-sub">Admin — Knowledge Acquisition</div>', unsafe_allow_html=True)
+    st.markdown('<div class="admin-sub">Admin - Knowledge Acquisition</div>', unsafe_allow_html=True)
     pwd = st.text_input("Password", type="password", key="admin_pwd")
     if st.button("Login"):
         if pwd == ADMIN_PASSWORD:
@@ -233,7 +233,7 @@ if not st.session_state.admin_authed:
 
 # ── Admin UI ───────────────────────────────────────────────────────────────────
 st.markdown('<div class="admin-title">TrainBot</div>', unsafe_allow_html=True)
-st.markdown('<div class="admin-sub">Admin — Knowledge Acquisition</div>', unsafe_allow_html=True)
+st.markdown('<div class="admin-sub">Admin - Knowledge Acquisition</div>', unsafe_allow_html=True)
 
 # ── Add new entry ──────────────────────────────────────────────────────────────
 st.markdown('<div class="section-label">Add new knowledge entry</div>', unsafe_allow_html=True)

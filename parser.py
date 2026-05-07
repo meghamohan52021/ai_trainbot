@@ -99,6 +99,10 @@ class LLMParser:
                 if current_state.get("to_station") is None:
                     extracted["to_station"] = found_stations[1]
 
+            if len(found_stations) == 1 and not extracted["to_station"]:
+                if current_state.get("from_station") is not None:
+                    extracted["to_station"] = found_stations[0]
+
         dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", text_lower)
 
         if len(dates) >= 2:
@@ -107,20 +111,15 @@ class LLMParser:
 
         elif len(dates) == 1:
             only_date = dates[0]
+            if (
+                current_state.get("journey_type") == "return"
+                and current_state.get("depart_date") not in (None, "", [])
+                and current_state.get("return_date") in (None, "", [])
+            ):
+                extracted["return_date"] = only_date
+            else:
+                extracted["depart_date"] = only_date
 
-            # If bot has already collected departure date,
-            # and this is a return journey,
-            # then the next single date should be treated as return date.
-        if (
-            current_state.get("journey_type") == "return"
-            and current_state.get("depart_date") not in (None, "", [])
-            and current_state.get("return_date") in (None, "", [])
-        ):
-            extracted["return_date"] = only_date
-
-        else:
-            extracted["depart_date"] = only_date
-            
 
         before_match = re.search(r"before\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", text_lower)
         after_match = re.search(r"after\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", text_lower)
@@ -186,13 +185,30 @@ class LLMParser:
             "destination": None,
         }
 
-        train_match = re.search(r"\b(train|service)\s+([a-zA-Z0-9\-]+)", text_lower)
-        if train_match:
+        _STOP_WORDS = {"is", "a", "the", "my", "to", "at", "in", "on", "by", "an", "not", "was", "has"}
+        train_match = re.search(r"\b(train|service|operator)\s+([a-zA-Z0-9\-]+)", text_lower)
+        if train_match and train_match.group(2) not in _STOP_WORDS:
             extracted["train_id"] = train_match.group(2).upper()
+        else:
+            # UK headcode pattern e.g. 1W67
+            headcode_match = re.search(r"\b([0-9][a-zA-Z][0-9]{2})\b", text_lower)
+            if headcode_match:
+                extracted["train_id"] = headcode_match.group(1).upper()
+            else:
+                _NOT_TRAIN_ID = {"i", "im", "my", "me", "it", "its", "delayed",
+                                 "late", "running", "slow", "train", "service"}
+                words = set(re.findall(r"\w+", text_lower))
+                if (not self.find_all_stations(text_lower)
+                        and not re.match(r"^\s*\d+\s*$", text_lower)
+                        and len(words) <= 3
+                        and not words.intersection(_NOT_TRAIN_ID)):
+                    extracted["train_id"] = text.strip()
 
         delay_match = re.search(r"(\d+)\s*(minute|minutes|min|mins)", text_lower)
         if delay_match:
             extracted["delay_minutes"] = int(delay_match.group(1))
+        elif re.match(r"^\s*\d+\s*$", text_lower):
+            extracted["delay_minutes"] = int(text_lower.strip())
 
         current_station = self.extract_current_station(text_lower)
         if current_station:
@@ -205,10 +221,15 @@ class LLMParser:
         found_stations = self.find_all_stations(text_lower)
 
         if found_stations:
-            if current_state.get("current_station") is None and extracted["current_station"] is None:
-                extracted["current_station"] = found_stations[0]
+            current_known = current_state.get("current_station") not in (None, "", [])
+            if extracted["current_station"] is None:
+                if not current_known:
+                    extracted["current_station"] = found_stations[0]
+                else:
+                    # current_station already set, lone station must be the destination
+                    extracted["destination"] = found_stations[0]
 
-            if current_state.get("destination") is None and extracted["destination"] is None:
+            if extracted["destination"] is None:
                 for station in found_stations:
                     if station != extracted["current_station"]:
                         extracted["destination"] = station
@@ -218,6 +239,7 @@ class LLMParser:
 
     def extract_current_station(self, text_lower: str):
         patterns = [
+            r"current\s+station\s+is\s+([a-zA-Z\s]+?)(?:\s+to\s+|\s+going\s+to\s+|$)",
             r"currently\s+at\s+([a-zA-Z\s]+?)(?:\s+to\s+|\s+going\s+to\s+|$)",
             r"now\s+at\s+([a-zA-Z\s]+?)(?:\s+to\s+|\s+going\s+to\s+|$)",
             r"at\s+([a-zA-Z\s]+?)(?:\s+to\s+|\s+going\s+to\s+|$)",
@@ -272,9 +294,22 @@ class LLMParser:
         aliases = sorted(STATION_ALIASES.items(), key=lambda item: len(item[0]), reverse=True)
 
         for alias, official_name in aliases:
-            if alias in text or official_name.lower() in text:
-                if official_name not in found:
-                    found.append(official_name)
+            is_crs = len(alias) == 3 and alias.isalpha()
+            if is_crs:
+                # CRS codes: match at word-boundary start so "wat" hits "waterloo"
+                # but not mid-word like "ain" inside "train"
+                m = re.search(r"\b" + re.escape(alias) + r"(\w*)", text)
+                matched = bool(m)
+                if matched and m.group(1) and any(alias + m.group(1) in on.lower() for on in found):
+                    matched = False
+            else:
+                # Full names: require full word boundaries to stop "leigh" matching inside "eastleigh"
+                matched = bool(
+                    re.search(r"\b" + re.escape(alias) + r"\b", text) or
+                    re.search(r"\b" + re.escape(official_name.lower()) + r"\b", text)
+                )
+            if matched and official_name not in found:
+                found.append(official_name)
 
         return found
 
@@ -293,3 +328,4 @@ class LLMParser:
                 hour = 0
 
         return f"{hour:02d}:{minute:02d}"
+

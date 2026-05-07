@@ -1,0 +1,53 @@
+
+paths:
+  data_raw: data/raw
+  data_interim: data/interim
+  data_processed: data/processed
+  data_external: data/external
+  models: models
+  reports: reports
+  figures: reports/figures
+
+data:
+  station_code_file: data/external/StationNameAndCode.csv
+ 
+  yearly_file_pattern: "{year}_{direction}.xlsx"
+  years: [2022, 2023, 2024, 2025]
+  directions: [WEY2WAT, WAT2WEY]
+
+
+scenario:
+  origin: WEY
+  destination: WAT
+  example_current_station: SOU   # Southampton
+  example_delay_minutes: 10
+
+modelling:
+
+  target: delay_minutes_at_destination
+ 
+  test_size_fraction: 0.2
+  random_state: 42
+  
+  max_plausible_delay_minutes: 240
+
+models:
+  knn:
+    n_neighbors: [3, 5, 10, 20]
+    weights: [uniform, distance]
+  ridge:
+    alpha: [0.1, 1.0, 10.0]
+  random_forest:
+    n_estimators: [100, 300]
+    max_depth: [null, 10, 20]
+    min_samples_leaf: [1, 5]
+  gradient_boosting:
+    n_estimators: [100, 300]
+    max_depth: [3, 5]
+    learning_rate: [0.05, 0.1]
+
+evaluation:
+
+  metrics: [mae, rmse, r2]
+
+  primary_metric: mae
