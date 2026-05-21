@@ -54,10 +54,11 @@ class LLMParser:
 
         ticket_words = [
             "ticket", "tickets", "fare", "price", "cheapest",
-            "journey", "travel", "return", "single", "one way",
-            "from", "to", "go to", "going to",
+            "journey", "travel", "travelling", "return", "single", "one way",
+            "book", "train to", "go to", "going to", "from",
         ]
-        if any(w in lower for w in ticket_words):
+        has_route_pattern = bool(re.search(r"\bfrom\s+.+?\s+to\s+.+", lower))
+        if has_route_pattern or any(w in lower for w in ticket_words):
             if intent != "delay" and confidence < 0.85:
                 intent = "ticket"
                 confidence = max(confidence, 0.75)
@@ -187,7 +188,10 @@ class LLMParser:
         #Time preference extraction
         time_prefs = extract_time_preferences(text)
         if text_lower in no_time_preference:
-            extracted["depart_time_pref"] = {"type": "any", "time": None}
+            if current_state.get("journey_type") == "return" and current_state.get("depart_time_pref"):
+                extracted["return_time_pref"] = {"type": "any", "time": None}
+            else:
+                extracted["depart_time_pref"] = {"type": "any", "time": None}
         if time_prefs:
             if len(time_prefs) >= 2:
                 extracted["depart_time_pref"] = time_prefs[0]
@@ -393,13 +397,19 @@ class LLMParser:
 
         if not extracted["train_id"]:
             stop_words = {"is", "a", "the", "my", "to", "at", "in", "on", "by", "an", "not", "was", "has"}
-            train_match = re.search(r"\b(train|service|operator)\s+([a-zA-Z0-9\-]+)", text_lower)
-            if train_match and train_match.group(2) not in stop_words:
-                extracted["train_id"] = train_match.group(2).upper()
+            train_match = re.search(r"\b(train|service|operator)\s+([a-zA-Z0-9\-\s]+)", text_lower)
+            if train_match:
+                raw_train = train_match.group(2).strip()
+                raw_train = re.split(r"\s+to\s+|\s+from\s+|\s+at\s+|\s+currently\s+", raw_train)[0].strip()
+                extracted["train_id"] = raw_train.title()
             else:
                 headcode_match = re.search(r"\b([0-9][a-zA-Z][0-9]{2})\b", text_lower)
                 if headcode_match:
                     extracted["train_id"] = headcode_match.group(1).upper()
+            
+            operator_match = re.search(r"\boperator\s+([a-zA-Z\s]+)", text_lower)
+            if operator_match:
+                extracted["train_id"] = operator_match.group(1).title()
 
         if extracted["delay_minutes"] is None:
             extracted["delay_minutes"] = extract_delay_minutes(text_lower)
@@ -434,11 +444,11 @@ class LLMParser:
     @staticmethod
     def _extract_raw_current_station(text_lower: str) -> Optional[str]:
         patterns = [
-            r"\bcurrent\s+station\s+is\s+(.+?)(?:\s+going\s+to|\s+to\s+|$)",
-            r"\bcurrently\s+at\s+(.+?)(?:\s+going\s+to|\s+to\s+|$)",
-            r"\bnow\s+at\s+(.+?)(?:\s+going\s+to|\s+to\s+|$)",
-            r"\bat\s+(.+?)(?:\s+going\s+to|\s+to\s+|$)",
-            r"\breached\s+(.+?)(?:\s+going\s+to|\s+to\s+|$)",
+            r"\bcurrent\s+station\s+is\s+(.+?)(?:\s+with\s+|\s+delayed\s+|\s+delay\s+|\s+going\s+to|\s+to\s+|$)",
+            r"\bcurrently\s+at\s+(.+?)(?:\s+with\s+|\s+delayed\s+|\s+delay\s+|\s+going\s+to|\s+to\s+|$)",
+            r"\bnow\s+at\s+(.+?)(?:\s+with\s+|\s+delayed\s+|\s+delay\s+|\s+going\s+to|\s+to\s+|$)",
+            r"\bat\s+(.+?)(?:\s+with\s+|\s+delayed\s+|\s+delay\s+|\s+going\s+to|\s+to\s+|$)",
+            r"\breached\s+(.+?)(?:\s+with\s+|\s+delayed\s+|\s+delay\s+|\s+going\s+to|\s+to\s+|$)",
         ]
         for pattern in patterns:
             m = re.search(pattern, text_lower)

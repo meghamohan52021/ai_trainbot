@@ -3,164 +3,161 @@ import collections.abc
 
 if not hasattr(collections, "Mapping"):
     collections.Mapping = collections.abc.Mapping
-
 if not hasattr(collections, "MutableMapping"):
     collections.MutableMapping = collections.abc.MutableMapping
-
 if not hasattr(collections, "Sequence"):
+    
     collections.Sequence = collections.abc.Sequence
+#Experta-based reasoning engine for TrainBot
+from typing import Any, List, Optional
 
-from experta import KnowledgeEngine, Fact, Rule
+from experta import Fact, KnowledgeEngine, MATCH, P, Rule
 
 
-class RulesEngine(KnowledgeEngine):
-    """
-    Uses extracted facts to route the train chatbot intent, ask 
-    the next missing ticket or delay question, and complete the 
-    task when all required details are filled
-    """
+class ReasoningFact(Fact):
+    #Fact object used by the Experta rule engine
+    pass
+
+
+TICKET_QUESTIONS = {
+    "from_station": "Where are you travelling from?",
+    "to_station": "Where are you travelling to?",
+    "journey_type": "Is this a single or return journey?",
+    "depart_date": "What date are you travelling? You can say 'tomorrow', 'next Tuesday', or '15 July'.",
+    "depart_time_pref": "What time would you prefer to depart? You can say 'morning', 'before 10am', 'after 2pm', or 'no preference'.",
+    "return_date": "What date are you coming back?",
+    "return_time_pref": "What return time would you prefer? For example, 'after 2pm' or 'no preference'.",
+}
+
+DELAY_QUESTIONS = {
+    "current_station": "Which station has the train currently reached?",
+    "delay_minutes": "How many minutes is the train delayed? For example, '10 minutes'.",
+    "destination": "What is your destination station?",
+}
+
+
+class TrainBotReasoningEngine(KnowledgeEngine):
 
     def __init__(self):
         super().__init__()
-        self.response = None
-        self.action = None
+        self.decision: Optional[str] = None
 
-    
-    #Intent routing rules
-    @Rule(Fact(intent="ticket"))
-    def go_ticket(self):
-        self.action = "ticket_flow"
+    @Rule(ReasoningFact(kind="intent", intent="ticket"))
+    def route_ticket_intent(self):
+        self.decision = "ticket_flow"
 
-    @Rule(Fact(intent="delay"))
-    def go_delay(self):
-        self.action = "delay_flow"
+    @Rule(ReasoningFact(kind="intent", intent="delay"))
+    def route_delay_intent(self):
+        self.decision = "delay_flow"
 
-    @Rule(Fact(intent="faq"))
-    def go_faq(self):
-        self.action = "faq_flow"
+    @Rule(ReasoningFact(kind="intent", intent=MATCH.intent))
+    def route_other_intent(self, intent):
+        if self.decision is None:
+            self.decision = "faq_flow"
 
-    @Rule(Fact(intent="unknown"))
-    def no_idea(self):
-        self.response = "Sorry, I did not understand that. Could you rephrase it?"
+    @Rule(ReasoningFact(kind="ticket", complete=True))
+    def ticket_is_complete(self):
+        self.decision = "ticket_complete"
 
-    
-    #Ticket missing-slot rules
-    @Rule(Fact(task="ticket"), Fact(missing_slot="from_station"))
-    def need_origin(self):
-        self.response = "Where are you travelling from?"
+    @Rule(ReasoningFact(kind="ticket", complete=False, first_missing=MATCH.slot))
+    def ask_for_missing_ticket_slot(self, slot):
+        self.decision = TICKET_QUESTIONS.get(slot, f"Please provide: {slot}")
 
-    @Rule(Fact(task="ticket"), Fact(missing_slot="to_station"))
-    def need_dest(self):
-        self.response = "Where are you travelling to?"
+    @Rule(ReasoningFact(kind="delay", complete=True))
+    def delay_is_complete(self):
+        self.decision = "delay_complete"
 
-    @Rule(Fact(task="ticket"), Fact(missing_slot="journey_type"))
-    def need_type(self):
-        self.response = "Is this a single or return journey?"
+    @Rule(ReasoningFact(kind="delay", complete=False, first_missing=MATCH.slot))
+    def ask_for_missing_delay_slot(self, slot):
+        self.decision = DELAY_QUESTIONS.get(slot, f"Please provide: {slot}")
 
-    @Rule(Fact(task="ticket"), Fact(missing_slot="depart_date"))
-    def need_depart_date(self):
-        self.response = (
-            "What date are you travelling? "
-            "You can say 'tomorrow', 'day after tomorrow', 'next Tuesday', or '15 July'."
+    @Rule(
+        ReasoningFact(kind="prediction_advice", predicted_delay=P(lambda d: float(d) >= 120)),
+        salience=40,
+    )
+    def advise_delay_120(self):
+        self.decision = (
+            "You may be eligible for a strong Delay Repay claim because the predicted delay is over 120 minutes."
         )
 
-    @Rule(Fact(task="ticket"), Fact(missing_slot="depart_time_pref"))
-    def need_depart_time(self):
-        self.response = (
-            "What time would you prefer to depart? "
-            "You can say 'morning', 'afternoon', 'before 10am', 'after 2pm', "
-            "or 'no preference'."
-        )
+    @Rule(
+        ReasoningFact(kind="prediction_advice", predicted_delay=P(lambda d: 60 <= float(d) < 120)),
+        salience=30,
+    )
+    def advise_delay_60(self):
+        self.decision = "You may be eligible for Delay Repay because the predicted delay is over 60 minutes."
 
-    @Rule(Fact(task="ticket"), Fact(missing_slot="return_date"))
-    def need_return_date(self):
-        self.response = (
-            "What date are you coming back? "
-            "You can say 'tomorrow', 'day after tomorrow', 'next Tuesday', or '15 July'."
-        )
+    @Rule(
+        ReasoningFact(kind="prediction_advice", predicted_delay=P(lambda d: 30 <= float(d) < 60)),
+        salience=20,
+    )
+    def advise_delay_30(self):
+        self.decision = "You may be eligible for Delay Repay because the predicted delay is over 30 minutes."
 
-    @Rule(Fact(task="ticket"), Fact(missing_slot="return_time_pref"))
-    def need_return_time(self):
-        self.response = (
-            "What return time would you prefer? "
-            "You can say 'afternoon', 'after 2pm', 'evening', or 'no preference'."
-        )
+    @Rule(
+        ReasoningFact(kind="prediction_advice", predicted_delay=P(lambda d: 15 <= float(d) < 30)),
+        salience=10,
+    )
+    def advise_delay_15(self):
+        self.decision = "You may be eligible for Delay Repay because the predicted delay is over 15 minutes."
 
-    @Rule(Fact(task="ticket"), Fact(complete=True))
-    def ticket_done(self):
-        self.response = "ticket_complete"
-
-    # Delay missing-slot rules
-    @Rule(Fact(task="delay"), Fact(missing_slot="train_id"))
-    def need_train(self):
-        self.response = "Which train are you on? Please enter the train ID or service name."
-
-    @Rule(Fact(task="delay"), Fact(missing_slot="current_station"))
-    def need_cur_station(self):
-        self.response = "Which station has the train currently reached?"
-
-    @Rule(Fact(task="delay"), Fact(missing_slot="delay_minutes"))
-    def need_delay(self):
-        self.response = "How many minutes is the train delayed? You can say '15 minutes' or 'fifteen minutes'."
-
-    @Rule(Fact(task="delay"), Fact(missing_slot="destination"))
-    def need_dest_station(self):
-        self.response = "What is your destination station?"
-
-    @Rule(Fact(task="delay"), Fact(complete=True))
-    def delay_done(self):
-        self.response = "delay_complete"
+    @Rule(
+        ReasoningFact(kind="prediction_advice", predicted_delay=P(lambda d: float(d) < 15)),
+        salience=0,
+    )
+    def advise_delay_under_15(self):
+        self.decision = "The predicted delay is under 15 minutes, so compensation is less likely."
 
 
-def decide_intent_with_rules(intent):
-    #Route to the correct flow based on detected intent, or return a fallback response if intent is unknown
-    eng = RulesEngine()
-    eng.reset()
-    eng.declare(Fact(intent=intent))
-    eng.run()
-    return eng.action or "faq_flow"
+def _run_engine(fact_data: dict[str, Any], default: str) -> str:
+    engine = TrainBotReasoningEngine()
+    engine.reset()
+    engine.declare(ReasoningFact(**fact_data))
+    engine.run()
+    return engine.decision or default
 
 
-def decide_next_ticket_action(missing):
-    #decide next ticket question based on the first missing slot
-    eng = RulesEngine()
-    eng.reset()
-
-    if not missing:
-        eng.declare(Fact(task="ticket"))
-        eng.declare(Fact(complete=True))
-    else:
-        eng.declare(Fact(task="ticket"))
-        eng.declare(Fact(missing_slot=missing[0]))
-
-    eng.run()
-    return eng.response
+def _first_missing(missing: List[str]) -> Optional[str]:
+    return missing[0] if missing else None
 
 
-def decide_next_delay_action(missing):
-    #Decide next delay question based on the first missing slot
-    eng = RulesEngine()
-    eng.reset()
-
-    if not missing:
-        eng.declare(Fact(task="delay"))
-        eng.declare(Fact(complete=True))
-    else:
-        eng.declare(Fact(task="delay"))
-        eng.declare(Fact(missing_slot=missing[0]))
-
-    eng.run()
-    return eng.response
+def decide_intent_with_rules(intent: str) -> str:
+    #Decide which main flow the chatbot should use.
+    return _run_engine(
+        {"kind": "intent", "intent": intent},
+        default="faq_flow",
+    )
 
 
-def post_prediction_advice(predicted_delay: int):
-    #Provide advice based on the predicted delay duration for delay claims eligibility
-    if predicted_delay >= 120:
-        return "You may be eligible for a strong Delay Repay claim because the predicted delay is over 120 minutes."
-    if predicted_delay >= 60:
-        return "You may be eligible for Delay Repay because the predicted delay is over 60 minutes."
-    if predicted_delay >= 30:
-        return "You may be eligible for Delay Repay because the predicted delay is over 30 minutes."
-    if predicted_delay >= 15:
-        return "You may be eligible for Delay Repay because the predicted delay is over 15 minutes."
-    return "The predicted delay is under 15 minutes, so compensation is less likely."
+def decide_next_ticket_action(missing: List[str]) -> str:
+    #Decide the next ticket-flow action from the missing ticket slots.
+    complete = not missing
+    return _run_engine(
+        {
+            "kind": "ticket",
+            "complete": complete,
+            "first_missing": _first_missing(missing),
+        },
+        default="ticket_complete" if complete else f"Please provide: {_first_missing(missing)}",
+    )
+
+
+def decide_next_delay_action(missing: List[str]) -> str:
+    #Decide the next delay-flow action from the missing delay slots.
+    complete = not missing
+    return _run_engine(
+        {
+            "kind": "delay",
+            "complete": complete,
+            "first_missing": _first_missing(missing),
+        },
+        default="delay_complete" if complete else f"Please provide: {_first_missing(missing)}",
+    )
+
+
+def post_prediction_advice(predicted_delay: int | float) -> str:
+    #Give Delay Repay style advice after the prediction model returns a delay.
+    return _run_engine(
+        {"kind": "prediction_advice", "predicted_delay": float(predicted_delay)},
+        default="The predicted delay could not be assessed for Delay Repay advice.",
+    )
