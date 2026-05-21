@@ -1,13 +1,17 @@
 import csv
+from pathlib import Path
 
 STATION_ALIASES = {}
+STATION_CODES = {}  #CRS code
 
 
 def load_station_data():
-    global STATION_ALIASES
+    global STATION_ALIASES, STATION_CODES
+
+    csv_path = Path(__file__).parent / "StationNameAndCode.csv"
 
     try:
-        with open("StationNameAndCode.csv", newline="", encoding="utf-8") as file:
+        with open(csv_path, newline="", encoding="utf-8") as file:
             reader = csv.reader(file)
 
             next(reader)  #skip header
@@ -21,6 +25,8 @@ def load_station_data():
 
                 if station_name:
                     STATION_ALIASES[station_name.lower()] = station_name
+                    if code:
+                        STATION_CODES[station_name] = code
 
                 if code:
                     STATION_ALIASES[code.lower()] = station_name
@@ -30,3 +36,5 @@ def load_station_data():
 
 
 load_station_data()
+
+VALID_STATIONS = set(STATION_ALIASES.values())

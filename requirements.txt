@@ -1,0 +1,16 @@
+streamlit
+requests
+rapidfuzz
+experta
+frozendict==1.2
+pandas
+numpy
+scikit-learn
+joblib
+python-dateutil
+dateparser
+spacy
+number-parser
+pyyaml
+openpyxl
+pytest
