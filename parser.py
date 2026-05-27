@@ -1,7 +1,6 @@
 import re
 from typing import Dict, Optional, List, Any, Tuple
 
-from llm_client import LLMClient
 from number_normalizer import extract_delay_minutes, words_to_int
 from station_data import STATION_ALIASES
 from temporal_parser import (
@@ -12,64 +11,84 @@ from temporal_parser import (
 from entity_extractor import EntityExtractor
 from intent_classifier import IntentClassifier
 from nlu_result import NLUResult
-from config import INTENT_MEDIUM_CONFIDENCE
 from station_matcher import StationMatcher, StationMatch
+from nlp_engine import SpacyNLPEngine
 
 
 class LLMParser:
-    #Main parser class that combines regex, rules, 
-    #and LLM fallback for robust extraction of structured data from user input
+    """
+    Main NLP/NLU parser for TrainBot.
+
+    Despite the historical class name, this version does not use an LLM.
+    It uses a hybrid NLP pipeline:
+    1. spaCy tokenisation, lemmatisation, entities, noun chunks and similarity support
+    2. TF-IDF / ML intent classification
+    3. rule-based intent correction
+    4. regex/domain extraction for tickets, dates, times and delays
+    5. station fuzzy matching through StationMatcher
+    """
 
     def __init__(self):
-        self.llm = LLMClient()
+        self.nlp = SpacyNLPEngine()
         self.entities = EntityExtractor()
         self.intent_classifier = IntentClassifier()
         self.station_matcher = StationMatcher(STATION_ALIASES)
 
-
-    #Basic text processing
+    # Basic text processing
     def tokenize(self, text: str) -> List[str]:
-        cleaned = text.lower()
-        cleaned = re.sub(r"[?.,!]", " ", cleaned)
-        return cleaned.split()
+        return self.nlp.analyse(text).tokens
 
+    def lemmatize(self, text: str) -> List[str]:
+        return self.nlp.analyse(text).lemmas
 
-    #Intent detection with rules-based adjustments
+    # Intent detection with spaCy + ML + rule-based adjustments
     def understand(self, text: str, current_state: Optional[Dict[str, Any]] = None) -> NLUResult:
         current_state = current_state or {}
         lower = text.lower()
+        analysis = self.nlp.analyse(text)
 
         pred = self.intent_classifier.predict(text)
         intent = pred.get("intent", "unknown")
         confidence = float(pred.get("confidence", 0.0))
+        source_parts = ["tfidf_intent_classifier"]
 
-        delay_words = [
-            "delay", "delayed", "late", "arrival", "arrive",
-            "reached", "current station", "minutes", "mins",
-        ]
-        if any(w in lower for w in delay_words):
-            if confidence < 0.85:
+        # Delay language should take priority over ticket language if both appear.
+        # Example: "I want to go to Norwich but my train got delayed"
+        if self.nlp.has_delay_language(text):
+            if confidence < 0.90 or intent != "delay":
                 intent = "delay"
-                confidence = max(confidence, 0.75)
+                confidence = max(confidence, 0.86)
+                source_parts.append("spacy_delay_lemma_rule")
 
-        ticket_words = [
-            "ticket", "tickets", "fare", "price", "cheapest",
-            "journey", "travel", "travelling", "return", "single", "one way",
-            "book", "train to", "go to", "going to", "from",
-        ]
         has_route_pattern = bool(re.search(r"\bfrom\s+.+?\s+to\s+.+", lower))
-        if has_route_pattern or any(w in lower for w in ticket_words):
-            if intent != "delay" and confidence < 0.85:
+        if intent != "delay" and (has_route_pattern or self.nlp.has_ticket_language(text)):
+            if confidence < 0.88:
                 intent = "ticket"
-                confidence = max(confidence, 0.75)
+                confidence = max(confidence, 0.78)
+                source_parts.append("spacy_ticket_lemma_rule")
+
+        # Very explicit command words
+        if lower.strip() in {"reset", "restart"}:
+            intent = "reset"
+            confidence = 1.0
+            source_parts.append("explicit_reset_rule")
+        elif lower.strip() in {"bye", "goodbye", "exit", "quit"}:
+            intent = "goodbye"
+            confidence = 1.0
+            source_parts.append("explicit_goodbye_rule")
 
         return NLUResult(
             intent=intent,
             intent_confidence=confidence,
-            entities={},
+            entities={
+                "tokens": analysis.tokens,
+                "lemmas": analysis.lemmas,
+                "spacy_entities": analysis.entities,
+                "noun_chunks": analysis.noun_chunks,
+            },
             entity_confidence={},
-            source="tfidf_intent_classifier_plus_rules",
-            needs_llm_fallback=confidence < INTENT_MEDIUM_CONFIDENCE,
+            source="+".join(source_parts),
+            needs_llm_fallback=False,
             raw_text=text,
         )
 
@@ -92,10 +111,11 @@ class LLMParser:
             return [c.station for c in match.candidates]
         return []
 
-    #Ticket extraction
+    # Ticket extraction
     def extract_ticket(self, text: str, current_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         current_state = current_state or {}
         text_lower = text.lower().strip()
+
         no_time_preference = {
             "no preference",
             "any time",
@@ -103,7 +123,8 @@ class LLMParser:
             "no preferred time",
             "i don't mind",
             "i dont mind",
-            "any",}
+            "any",
+        }
 
         extracted: Dict[str, Any] = {
             "from_station": None,
@@ -118,7 +139,7 @@ class LLMParser:
             "station_not_found": None,
         }
 
-        #Journey type
+        # Journey type
         if any(x in text_lower for x in ["return", "come back", "coming back", "round trip", "round-trip"]):
             extracted["journey_type"] = "return"
         elif any(x in text_lower for x in ["single", "one way", "one-way", "oneway"]):
@@ -132,7 +153,6 @@ class LLMParser:
         if raw_to:
             self._apply_station_match(extracted, "to_station", raw_to)
 
-        
         if not raw_from and not raw_to and not self._is_non_station_ticket_input(text_lower):
             station_match = self.station_matcher.match(text)
 
@@ -146,7 +166,6 @@ class LLMParser:
                     if station != current_state.get("to_station"):
                         extracted["from_station"] = station
                 else:
-                    #Do not guess unless the phrase contains a direction word
                     if re.search(r"\b(to|go to|going to|destination)\b", text_lower):
                         extracted["to_station"] = station
                     elif re.search(r"\b(from|leaving from|departing from|origin)\b", text_lower):
@@ -167,7 +186,7 @@ class LLMParser:
                     "raw_text": text.strip(),
                 }
 
-        #Natural date extraction
+        # Natural date extraction
         dates = parse_natural_dates(text)
         if len(dates) >= 2:
             extracted["depart_date"] = dates[0]
@@ -185,13 +204,14 @@ class LLMParser:
             else:
                 extracted["depart_date"] = only_date
 
-        #Time preference extraction
+        # Time preference extraction
         time_prefs = extract_time_preferences(text)
         if text_lower in no_time_preference:
             if current_state.get("journey_type") == "return" and current_state.get("depart_time_pref"):
                 extracted["return_time_pref"] = {"type": "any", "time": None}
             else:
                 extracted["depart_time_pref"] = {"type": "any", "time": None}
+
         if time_prefs:
             if len(time_prefs) >= 2:
                 extracted["depart_time_pref"] = time_prefs[0]
@@ -214,7 +234,7 @@ class LLMParser:
                 else:
                     extracted["depart_time_pref"] = pref
 
-        #Trip duration
+        # Trip duration
         duration_options = self.extract_duration_options(text_lower)
         if duration_options:
             extracted["duration_options"] = duration_options
@@ -227,27 +247,13 @@ class LLMParser:
             extracted["return_date"] = inferred_return
             extracted["journey_type"] = "return"
 
-        #Safety: never return same station as origin and destination.
+        # Safety: never return same station as origin and destination.
         if (
             extracted.get("from_station")
             and extracted.get("to_station")
             and extracted["from_station"] == extracted["to_station"]
         ):
             extracted["to_station"] = None
-
-        #Optional LLM fallback only when almost nothing useful was extracted
-        useful_values = [
-            extracted["from_station"], extracted["to_station"], extracted["journey_type"],
-            extracted["depart_date"], extracted["return_date"], extracted["depart_time_pref"],
-            extracted["return_time_pref"], extracted["station_ambiguity"], extracted["station_not_found"],
-        ]
-        if not any(v not in (None, "", []) for v in useful_values):
-            nlu = self.understand(text, current_state)
-            if nlu.needs_llm_fallback:
-                llm_data = self.llm.extract_structured_data(text, current_state)
-                for key, value in llm_data.items():
-                    if key in extracted and extracted[key] in (None, "", []):
-                        extracted[key] = value
 
         return extracted
 
@@ -269,35 +275,35 @@ class LLMParser:
             }
 
     def extract_raw_route_phrases(self, text_lower: str) -> Tuple[Optional[str], Optional[str]]:
-        #Stop before date/time/journey words
-        stop = r"(?:\s+on\b|\s+at\b|\s+before\b|\s+after\b|\s+tomorrow\b|\s+today\b|\s+next\b|\s+return\b|\s+single\b|$)"
+        # Stop before date/time/journey words and also before contrast/explanation words.
+        stop = (
+            r"(?:\s+on\b|\s+at\b|\s+before\b|\s+after\b|\s+tomorrow\b|\s+today\b|"
+            r"\s+next\b|\s+return\b|\s+single\b|\s+but\b|\s+because\b|\s+since\b|"
+            r"\s+as\b|\s+and\s+my\s+train\b|$)"
+        )
 
-        
         m = re.search(rf"\bfrom\s+(.+?)\s+to\s+(.+?){stop}", text_lower)
         if m:
             return self._clean_station_phrase(m.group(1)), self._clean_station_phrase(m.group(2))
 
-        
         m = re.search(rf"\b(?:go\s+to|going\s+to|travel\s+to|travelling\s+to|get\s+to|to)\s+(.+?)\s+from\s+(.+?){stop}", text_lower)
         if m:
             return self._clean_station_phrase(m.group(2)), self._clean_station_phrase(m.group(1))
 
-        
         cleaned = re.sub(
             r"\b(i|we)\s+(want|need|would like|wanna)\s+(to\s+)?(go|travel|get|book)?\s*",
             " ",
             text_lower,
         ).strip()
+
         m = re.search(rf"^(.+?)\s+to\s+(.+?){stop}", cleaned)
         if m:
             return self._clean_station_phrase(m.group(1)), self._clean_station_phrase(m.group(2))
 
-        
         m = re.search(rf"\b(?:go\s+to|going\s+to|travel\s+to|travelling\s+to|get\s+to|to)\s+(.+?){stop}", text_lower)
         if m:
             return None, self._clean_station_phrase(m.group(1))
 
-        
         m = re.search(rf"\bfrom\s+(.+?){stop}", text_lower)
         if m:
             return self._clean_station_phrase(m.group(1)), None
@@ -306,21 +312,52 @@ class LLMParser:
 
     @staticmethod
     def _clean_station_phrase(value: str) -> str:
-        value = re.sub(r"\b(i|we|want|need|would|like|to|go|going|travel|travelling|get|book|a|an|the|ticket|train)\b", " ", value)
-        value = re.sub(r"\s+", " ", value).strip(" ,.!?")
-        return value
+        """
+        Clean station phrase extracted by regex.
 
+        This prevents phrases like 'norwich but my train got delayed' being
+        treated as a station name.
+        """
+        value = value.strip()
+
+        cut_phrases = [
+            " but ",
+            " because ",
+            " since ",
+            " as ",
+            " and my train",
+            " my train",
+            " train got",
+            " train is",
+            " got delayed",
+            " delayed",
+            " delay",
+            " late",
+        ]
+
+        lower = value.lower()
+        for cut in cut_phrases:
+            if cut in lower:
+                value = value[: lower.index(cut)]
+                break
+
+        value = re.sub(
+            r"\b(i|we|want|need|would|like|to|go|going|travel|travelling|get|book|a|an|the|ticket|train)\b",
+            " ",
+            value,
+        )
+        value = re.sub(r"\s+", " ", value).strip(" ,.!?'\"")
+        return value
 
     @staticmethod
     def _is_non_station_ticket_input(text_lower: str) -> bool:
-            # Prevent dates/times/random full sentences from being reported as unknown stations
+        # Prevent dates/times/random full sentences from being reported as unknown stations.
         if not text_lower:
             return True
 
         clean = re.sub(r"[^a-z0-9: ]+", " ", text_lower.lower())
         clean = re.sub(r"\s+", " ", clean).strip()
 
-        #Direct journey-type answers
         if clean in {
             "single", "return", "one way", "one way ticket",
             "yes", "no", "y", "n", "correct", "wrong",
@@ -328,7 +365,6 @@ class LLMParser:
         }:
             return True
 
-        #Date/time expressions should not be station matched
         date_time_words = {
             "today", "tomorrow", "day after tomorrow", "next",
             "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
@@ -343,7 +379,6 @@ class LLMParser:
         if tokens and tokens.issubset(date_time_words):
             return True
 
-        #Phrases such as 'after 2pm', 'before 10am', 'next tuesday'
         if re.search(r"\b(after|before|around|about|at)\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b", clean):
             return True
         if re.search(r"\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", clean):
@@ -353,15 +388,13 @@ class LLMParser:
 
     @staticmethod
     def _looks_like_station_answer(text_lower: str) -> bool:
-        #Prevent dates/times/random full sentences from being reported as unknown stations
         if not text_lower or len(text_lower.split()) > 5:
             return False
         if any(w in text_lower for w in ["tomorrow", "today", "single", "return", "after", "before", "morning", "afternoon", "evening"]):
             return False
         return bool(re.search(r"[a-z]", text_lower))
 
-
-    #Delay extraction
+    # Delay extraction
     def extract_delay(self, text: str, current_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         current_state = current_state or {}
         text_lower = text.lower().strip()
@@ -378,10 +411,10 @@ class LLMParser:
         entity_data = self.entities.extract(text)
         roles = entity_data.get("station_roles", {})
 
+        # train_id is kept for compatibility but the controller removes it before prediction.
         extracted["train_id"] = entity_data.get("train_id")
         extracted["delay_minutes"] = entity_data.get("delay_minutes")
 
-        #Try explicit station phrases first
         current_raw = self._extract_raw_current_station(text_lower)
         dest_raw = self._extract_raw_delay_destination(text_lower)
 
@@ -395,36 +428,8 @@ class LLMParser:
         elif roles.get("destination") or roles.get("to_station"):
             extracted["destination"] = roles.get("destination") or roles.get("to_station")
 
-        if not extracted["train_id"]:
-            stop_words = {"is", "a", "the", "my", "to", "at", "in", "on", "by", "an", "not", "was", "has"}
-            train_match = re.search(r"\b(train|service|operator)\s+([a-zA-Z0-9\-\s]+)", text_lower)
-            if train_match:
-                raw_train = train_match.group(2).strip()
-                raw_train = re.split(r"\s+to\s+|\s+from\s+|\s+at\s+|\s+currently\s+", raw_train)[0].strip()
-                extracted["train_id"] = raw_train.title()
-            else:
-                headcode_match = re.search(r"\b([0-9][a-zA-Z][0-9]{2})\b", text_lower)
-                if headcode_match:
-                    extracted["train_id"] = headcode_match.group(1).upper()
-            
-            operator_match = re.search(r"\boperator\s+([a-zA-Z\s]+)", text_lower)
-            if operator_match:
-                extracted["train_id"] = operator_match.group(1).title()
-
         if extracted["delay_minutes"] is None:
             extracted["delay_minutes"] = extract_delay_minutes(text_lower)
-
-        useful_values = [
-            extracted["train_id"], extracted["current_station"], extracted["delay_minutes"],
-            extracted["destination"], extracted["station_ambiguity"], extracted["station_not_found"],
-        ]
-        if not any(v not in (None, "", []) for v in useful_values):
-            nlu = self.understand(text, current_state)
-            if nlu.needs_llm_fallback:
-                llm_data = self.llm.extract_structured_data(text, current_state)
-                for key, value in llm_data.items():
-                    if key in extracted and extracted[key] in (None, "", []):
-                        extracted[key] = value
 
         return extracted
 
@@ -461,7 +466,7 @@ class LLMParser:
         patterns = [
             r"\bdestination\s+is\s+(.+?)$",
             r"\bgoing\s+to\s+(.+?)$",
-            r"\sto\s+(.+?)$",
+            r"\bto\s+(.+?)$",
         ]
         for pattern in patterns:
             m = re.search(pattern, text_lower)
@@ -469,13 +474,11 @@ class LLMParser:
                 return LLMParser._clean_station_phrase(m.group(1))
         return None
 
-
-    #Public extraction method called by controller, which decides based on intent which extraction to run
+    # Public extraction method called by controller
     def extract(self, text: str, current_state: Optional[Dict[str, Any]], task: str = "ticket") -> Dict[str, Any]:
         if task == "delay":
             return self.extract_delay(text, current_state)
         return self.extract_ticket(text, current_state)
-
 
     def extract_current_station(self, text_lower: str):
         raw = self._extract_raw_current_station(text_lower)
@@ -485,8 +488,7 @@ class LLMParser:
         raw = self._extract_raw_delay_destination(text_lower)
         return self.find_station_in_text(raw) if raw else None
 
-    
-    #Duration helpers
+    # Duration helpers
     def extract_duration_options(self, text_lower: str) -> List[int]:
         options = []
 

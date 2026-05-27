@@ -85,6 +85,12 @@ class ConversationController:
 
         if clean in {"restart", "reset"}:
             return self._reset()
+        
+        if clean in {"hi", "hello", "hey", "hiya", "good morning", "good afternoon", "good evening"}:
+            return (
+                "Hi! I can help you find train tickets, check delay predictions, "
+                "or answer general train travel questions."
+            )
 
         if self._is_goodbye_or_done(text):
             return self._finish_conversation()
