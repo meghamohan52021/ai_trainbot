@@ -13,6 +13,7 @@ from reasoning_engine import (
     decide_next_delay_action,
 )
 from slot_manager import SlotManager
+from config import SHOW_LLM_TO_USER
 
 
 class ConversationController:
@@ -79,6 +80,155 @@ class ConversationController:
         self._clear_pending()
         return "You're welcome. Safe travels!"
 
+
+    #Gemini LLM fallback helpers
+    def _state_snapshot(self) -> Dict[str, Any]:
+        return {
+            "current_task": self.state.current_task,
+            "ticket": self.state.ticket.to_dict(),
+            "delay": self.state.delay.to_dict(),
+            "pending": self._get_pending(),
+            "last_intent": self.state.last_intent,
+            "last_confidence": self.state.last_confidence,
+            "last_nlu_source": self.state.last_nlu_source,
+        }
+
+    def _llm_note(self, data: Dict[str, Any]) -> str:
+        if not SHOW_LLM_TO_USER or not data.get("_llm_used"):
+            return ""
+        model = data.get("_llm_model", "Gemini")
+        return f"🤖 Gemini fallback used for one final understanding check ({model}).\n\n"
+
+    def _normalise_llm_station(self, value: Any) -> Optional[str]:
+        if value in (None, "", []):
+            return None
+        match = self.parser.match_station_with_status(str(value))
+        if match.status == "exact":
+            return match.station
+        #If Gemini gives a raw station phrase that is not in our station list, do not trust it
+        #The normal validation/slot flow will ask the user again instead of sending bad CRS data to the API
+        return None
+
+    def _normalise_llm_time_pref(self, value: Any) -> Optional[Dict[str, Any]]:
+        if value in (None, "", []):
+            return None
+        if isinstance(value, dict):
+            return value
+
+        raw = str(value).strip()
+        lower = raw.lower()
+        if lower in {"any", "any time", "anytime", "no preference", "no preferred time"}:
+            return {"type": "any", "time": None}
+
+        #Reuse the local parser to convert phrases like "before 10am" or "morning"
+        parsed = self.parser.extract(raw, {}, task="ticket")
+        return parsed.get("depart_time_pref") or parsed.get("return_time_pref")
+
+    def _normalise_llm_date(self, value: Any) -> Optional[str]:
+        if value in (None, "", []):
+            return None
+        raw = str(value).strip()
+
+        if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+            return raw
+
+        parsed = self.parser.extract(raw, {}, task="ticket")
+        return parsed.get("depart_date") or parsed.get("return_date")
+
+    def _apply_llm_ticket_data(self, data: Dict[str, Any]) -> None:
+        updates = {
+            "from_station": self._normalise_llm_station(data.get("from_station")),
+            "to_station": self._normalise_llm_station(data.get("to_station")),
+            "journey_type": data.get("journey_type"),
+            "depart_date": self._normalise_llm_date(data.get("depart_date")),
+            "depart_time_pref": self._normalise_llm_time_pref(data.get("depart_time_pref")),
+            "return_date": self._normalise_llm_date(data.get("return_date")),
+            "return_time_pref": self._normalise_llm_time_pref(data.get("return_time_pref")),
+        }
+
+        clean = {k: v for k, v in updates.items() if v not in (None, "", [])}
+
+        if clean.get("journey_type") == "single":
+            clean["return_date"] = None
+            clean["return_time_pref"] = None
+
+        print("[LLM FALLBACK] Applying extracted Gemini fields to ticket state:")
+        print(clean)
+        self.apply_updates(self.state.ticket, clean)
+        print("[LLM FALLBACK] Ticket state after Gemini application:")
+        print(self.state.ticket.to_dict())
+
+    def _apply_llm_delay_data(self, data: Dict[str, Any]) -> None:
+        updates = {
+            "current_station": self._normalise_llm_station(data.get("current_station")),
+            "destination": self._normalise_llm_station(data.get("destination") or data.get("to_station")),
+            "delay_minutes": data.get("delay_minutes"),
+        }
+
+        clean = {k: v for k, v in updates.items() if v not in (None, "", [])}
+
+        print("[LLM FALLBACK] Applying extracted Gemini fields to delay state:")
+        print(clean)
+        self.apply_updates(self.state.delay, clean)
+        print("[LLM FALLBACK] Delay state after Gemini application:")
+        print(self.state.delay.to_dict())
+
+    def _try_llm_final_extraction(self, text: str, reason: str, nlu=None) -> Optional[str]:
+        #Uses Gemini once as a final structured extraction attempt
+
+        #This function deliberately does not let Gemini answer the user
+        #Gemini only fills fields; then normal reasoning decides the next bot action
+        
+        local_context = {
+            "reason": reason,
+            "local_intent": getattr(nlu, "intent", None),
+            "local_confidence": getattr(nlu, "intent_confidence", None),
+            "local_source": getattr(nlu, "source", None),
+        }
+
+        data = self.parser.llm.extract_structured_data(
+            text=text,
+            current_state=self._state_snapshot(),
+            local_context=local_context,
+        )
+
+        if not data:
+            return None
+
+        intent = data.get("intent", "unknown")
+        confidence = float(data.get("confidence") or 0.0)
+
+        self.state.last_intent = intent
+        self.state.last_confidence = confidence
+        self.state.last_nlu_source = "gemini_fallback"
+
+        print(f"[LLM FALLBACK] Gemini selected intent='{intent}' confidence={confidence}")
+
+        note = self._llm_note(data)
+
+        #If the user is already inside a flow, respect that active task instead of 
+        #switching to a new intent that Gemini might have extracted
+        active_task = self.state.current_task
+        chosen_task = active_task if active_task in {"ticket", "delay"} else intent
+
+        if chosen_task == "ticket":
+            self.state.current_task = "ticket"
+            self._apply_llm_ticket_data(data)
+            return note + self._next_ticket_response()
+
+        if chosen_task == "delay":
+            self.state.current_task = "delay"
+            self._apply_llm_delay_data(data)
+            return note + self._next_delay_response()
+
+        if intent == "faq":
+            answer = self.kb.search(text)
+            if answer:
+                return note + answer
+
+        return None
+
+
     #Main entry point
     def handle_user_input(self, text: str) -> str:
         clean = text.lower().strip()
@@ -106,10 +256,19 @@ class ConversationController:
             return self._handle_pending(text, pending)
 
         if self.state.current_task is None:
-            nlu = self.parser.understand(text)
+            nlu = self.parser.understand(text, self._state_snapshot())
             self.state.last_intent = nlu.intent
             self.state.last_confidence = nlu.intent_confidence
             self.state.last_nlu_source = nlu.source
+
+            if nlu.needs_llm_fallback:
+                llm_response = self._try_llm_final_extraction(
+                    text,
+                    reason="local NLU confidence was low",
+                    nlu=nlu,
+                )
+                if llm_response:
+                    return llm_response
 
             flow = decide_intent_with_rules(nlu.intent)
             if flow == "ticket_flow":
@@ -118,7 +277,15 @@ class ConversationController:
                 self.state.current_task = "delay"
             else:
                 answer = self.kb.search(text)
-                return answer if answer else self.prompts.fallback()
+                if answer:
+                    return answer
+
+                llm_response = self._try_llm_final_extraction(
+                    text,
+                    reason="normal chatbot would have returned fallback",
+                    nlu=nlu,
+                )
+                return llm_response if llm_response else self.prompts.fallback()
 
         if self.state.current_task == "ticket":
             return self._ticket_flow(text)
@@ -127,7 +294,15 @@ class ConversationController:
             return self._delay_flow(text)
 
         answer = self.kb.search(text)
-        return answer if answer else self.prompts.fallback()
+        if answer:
+            return answer
+
+        llm_response = self._try_llm_final_extraction(
+            text,
+            reason="normal chatbot reached final fallback",
+            nlu=None,
+        )
+        return llm_response if llm_response else self.prompts.fallback()
 
     #Station ambiguity handling
     def _handle_station_meta(self, extracted: Dict[str, Any], task: str) -> Optional[str]:
@@ -231,7 +406,11 @@ class ConversationController:
         answer = text.lower().strip()
 
         if answer in self.YES_WORDS:
+            print("[TICKET API] User confirmed journey. Sending these details to TicketSearchAdapter:")
+            print(self.state.ticket.to_dict())
             result = self.ticket_search.search_cheapest(self.state.ticket.to_dict())
+            print("[TICKET API] TicketSearchAdapter result:")
+            print(result)
             self.confirm_ticket = False
             self.state.current_task = None
             self.state.ticket = JourneyState()
@@ -429,7 +608,11 @@ class ConversationController:
         answer = text.lower().strip()
 
         if answer in self.YES_WORDS:
+            print("[DELAY MODEL] User confirmed delay details. Sending these details to DelayPredictionAdapter:")
+            print(self.state.delay.to_dict())
             result = self.delay_predictor.predict_arrival(self.state.delay.to_dict())
+            print("[DELAY MODEL] DelayPredictionAdapter result:")
+            print(result)
             self.confirm_delay = False
             self.state.current_task = None
             self.state.delay = DelayState()

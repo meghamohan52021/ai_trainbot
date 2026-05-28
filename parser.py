@@ -13,16 +13,19 @@ from intent_classifier import IntentClassifier
 from nlu_result import NLUResult
 from station_matcher import StationMatcher, StationMatch
 from nlp_engine import SpacyNLPEngine
+from llm_client import LLMClient
+from config import INTENT_MEDIUM_CONFIDENCE
 
 
 class LLMParser:
     """
     Main NLP/NLU parser for TrainBot.
 
-    Despite the historical class name, this version does not use an LLM.
+    This parser mainly uses local NLP
+    A Gemini LLM fallback is available only when confidence is low or the controller needs a final try
     It uses a hybrid NLP pipeline:
     1. spaCy tokenisation, lemmatisation, entities, noun chunks and similarity support
-    2. TF-IDF / ML intent classification
+    2. TF-IDF/ML intent classification
     3. rule-based intent correction
     4. regex/domain extraction for tickets, dates, times and delays
     5. station fuzzy matching through StationMatcher
@@ -33,6 +36,7 @@ class LLMParser:
         self.entities = EntityExtractor()
         self.intent_classifier = IntentClassifier()
         self.station_matcher = StationMatcher(STATION_ALIASES)
+        self.llm = LLMClient()
 
     # Basic text processing
     def tokenize(self, text: str) -> List[str]:
@@ -88,7 +92,7 @@ class LLMParser:
             },
             entity_confidence={},
             source="+".join(source_parts),
-            needs_llm_fallback=False,
+            needs_llm_fallback=(intent == "unknown" or confidence < INTENT_MEDIUM_CONFIDENCE),
             raw_text=text,
         )
 
@@ -139,7 +143,7 @@ class LLMParser:
             "station_not_found": None,
         }
 
-        # Journey type
+        #Journey type
         if any(x in text_lower for x in ["return", "come back", "coming back", "round trip", "round-trip"]):
             extracted["journey_type"] = "return"
         elif any(x in text_lower for x in ["single", "one way", "one-way", "oneway"]):
@@ -204,7 +208,7 @@ class LLMParser:
             else:
                 extracted["depart_date"] = only_date
 
-        # Time preference extraction
+        #Time preference extraction
         time_prefs = extract_time_preferences(text)
         if text_lower in no_time_preference:
             if current_state.get("journey_type") == "return" and current_state.get("depart_time_pref"):
@@ -234,7 +238,7 @@ class LLMParser:
                 else:
                     extracted["depart_time_pref"] = pref
 
-        # Trip duration
+        #Trip duration
         duration_options = self.extract_duration_options(text_lower)
         if duration_options:
             extracted["duration_options"] = duration_options
@@ -247,7 +251,7 @@ class LLMParser:
             extracted["return_date"] = inferred_return
             extracted["journey_type"] = "return"
 
-        # Safety: never return same station as origin and destination.
+        #never return same station as origin and destination
         if (
             extracted.get("from_station")
             and extracted.get("to_station")
@@ -275,7 +279,7 @@ class LLMParser:
             }
 
     def extract_raw_route_phrases(self, text_lower: str) -> Tuple[Optional[str], Optional[str]]:
-        # Stop before date/time/journey words and also before contrast/explanation words.
+        # Stop before date/time/journey words and also before contrast/explanation words
         stop = (
             r"(?:\s+on\b|\s+at\b|\s+before\b|\s+after\b|\s+tomorrow\b|\s+today\b|"
             r"\s+next\b|\s+return\b|\s+single\b|\s+but\b|\s+because\b|\s+since\b|"
@@ -312,14 +316,9 @@ class LLMParser:
 
     @staticmethod
     def _clean_station_phrase(value: str) -> str:
-        """
-        Clean station phrase extracted by regex.
+        #Clean station phrase extracted by regex.
 
-        This prevents phrases like 'norwich but my train got delayed' being
-        treated as a station name.
-        """
         value = value.strip()
-
         cut_phrases = [
             " but ",
             " because ",
@@ -351,7 +350,7 @@ class LLMParser:
 
     @staticmethod
     def _is_non_station_ticket_input(text_lower: str) -> bool:
-        # Prevent dates/times/random full sentences from being reported as unknown stations.
+        #Prevent full sentences from being reported as unknown stations
         if not text_lower:
             return True
 
@@ -411,7 +410,6 @@ class LLMParser:
         entity_data = self.entities.extract(text)
         roles = entity_data.get("station_roles", {})
 
-        # train_id is kept for compatibility but the controller removes it before prediction.
         extracted["train_id"] = entity_data.get("train_id")
         extracted["delay_minutes"] = entity_data.get("delay_minutes")
 
@@ -474,7 +472,7 @@ class LLMParser:
                 return LLMParser._clean_station_phrase(m.group(1))
         return None
 
-    # Public extraction method called by controller
+    #Public extraction method called by controller
     def extract(self, text: str, current_state: Optional[Dict[str, Any]], task: str = "ticket") -> Dict[str, Any]:
         if task == "delay":
             return self.extract_delay(text, current_state)
