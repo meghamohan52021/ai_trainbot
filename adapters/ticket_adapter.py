@@ -1,6 +1,7 @@
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from pathlib import Path
 
 RTJP_USERNAME = "wwang"
 RTJP_PASSWORD = "?i92S6"
@@ -17,7 +18,7 @@ class TicketSearchAdapter:
         if not station_name:
             return ""
         import csv, os
-        csv_path = "/Users/rishitathummala/Documents/ai_trainbot/StationNameAndCode.csv"
+        csv_path =  Path(__file__).resolve().parent.parent / "StationNameAndCode.csv"
         try:
             with open(csv_path, newline="", encoding="utf-8") as f:
                 rows = list(csv.reader(f))[1:]

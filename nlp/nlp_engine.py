@@ -147,7 +147,7 @@ class SpacyNLPEngine:
 
     def has_ticket_language(self, text: str) -> bool:
         """
-        Detect ticket/journey language using spaCy tokens/lemmas.
+        Detect ticket/journey language using spaCy tokens/lemmas
         """
         ticket_terms = {
             "ticket", "fare", "price", "cheap", "cheapest", "book", "booking",

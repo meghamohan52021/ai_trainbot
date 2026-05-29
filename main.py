@@ -1,4 +1,4 @@
-from controller import ConversationController
+from core.controller import ConversationController
 
 
 def main():

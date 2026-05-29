@@ -13,6 +13,8 @@ from nlp.number_normalizer import extract_delay_minutes, words_to_int
 from nlp.station_matcher import StationMatcher, StationMatch
 from nlp.station_data import STATION_ALIASES
 from nlp.nlu_result import NLUResult
+from llm.llm_client import LLMClient
+from config import INTENT_MEDIUM_CONFIDENCE
 
 # Phrases that mean "open/flexible return" and must never be sent to the station matcher
 OPEN_RETURN_PHRASES = {
@@ -26,7 +28,8 @@ class LLMParser:
     """
     Main NLP/NLU parser for TrainBot.
 
-    Despite the historical class name, this version does not use an LLM.
+    This parser mainly uses local NLP. A Gemini LLM fallback is available only
+    when confidence is low or the controller needs a final structured extraction try.
     It uses a hybrid NLP pipeline:
     1. spaCy tokenisation, lemmatisation, entities, noun chunks and similarity support
     2. TF-IDF / ML intent classification
@@ -40,6 +43,7 @@ class LLMParser:
         self.entities = EntityExtractor()
         self.intent_classifier = IntentClassifier()
         self.station_matcher = StationMatcher(STATION_ALIASES)
+        self.llm = LLMClient()
 
     # Basic text processing
     def tokenize(self, text: str) -> List[str]:
@@ -95,7 +99,7 @@ class LLMParser:
             },
             entity_confidence={},
             source="+".join(source_parts),
-            needs_llm_fallback=False,
+            needs_llm_fallback=(intent == "unknown" or confidence < INTENT_MEDIUM_CONFIDENCE),
             raw_text=text,
         )
 

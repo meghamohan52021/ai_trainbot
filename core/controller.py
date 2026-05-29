@@ -15,6 +15,7 @@ from adapters.ticket_adapter import TicketSearchAdapter
 from adapters.delay_adapter import DelayPredictionAdapter
 from adapters.disruptions_adapter import get_disruptions, is_disruption_query
 from knowledge.kb import KnowledgeBase
+from config import SHOW_LLM_TO_USER
 
 DELAY_FAQ_PHRASES = {
     "delay repay", "compensation", "claim compensation", "how much compensation",
@@ -90,6 +91,157 @@ class ConversationController:
         self._clear_pending()
         return "You're welcome. Safe travels!"
 
+    #Gemini LLM fallback helpers
+    def _state_snapshot(self) -> Dict[str, Any]:
+        return {
+            "current_task": self.state.current_task,
+            "ticket": self.state.ticket.to_dict(),
+            "delay": self.state.delay.to_dict(),
+            "pending": self._get_pending(),
+            "last_intent": self.state.last_intent,
+            "last_confidence": self.state.last_confidence,
+            "last_nlu_source": self.state.last_nlu_source,
+        }
+
+    def _llm_note(self, data: Dict[str, Any]) -> str:
+        if not SHOW_LLM_TO_USER or not data.get("_llm_used"):
+            return ""
+        model = data.get("_llm_model", "Gemini")
+        return f"🤖 Gemini fallback used for one final understanding check ({model}).\n\n"
+
+    def _normalise_llm_station(self, value: Any) -> Optional[str]:
+        if value in (None, "", []):
+            return None
+        match = self.parser.match_station_with_status(str(value))
+        if match.status == "exact":
+            return match.station
+        #If Gemini gives a raw station phrase that is not in our station list, do not trust it
+        #The normal validation/slot flow will ask the user again instead of sending bad CRS data to the API
+        return None
+
+    def _normalise_llm_time_pref(self, value: Any) -> Optional[Dict[str, Any]]:
+        if value in (None, "", []):
+            return None
+        if isinstance(value, dict):
+            return value
+
+        raw = str(value).strip()
+        lower = raw.lower()
+        if lower in {"any", "any time", "anytime", "no preference", "no preferred time"}:
+            return {"type": "any", "time": None}
+
+        #Reuse the local parser to convert phrases like "before 10am" or "morning"
+        parsed = self.parser.extract(raw, {}, task="ticket")
+        return parsed.get("depart_time_pref") or parsed.get("return_time_pref")
+
+    def _normalise_llm_date(self, value: Any) -> Optional[str]:
+        if value in (None, "", []):
+            return None
+        raw = str(value).strip()
+        if raw.lower() in {"open", "open return", "flexible", "no return date"}:
+            return "open"
+
+        if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+            return raw
+
+        parsed = self.parser.extract(raw, {}, task="ticket")
+        return parsed.get("depart_date") or parsed.get("return_date")
+
+    def _apply_llm_ticket_data(self, data: Dict[str, Any]) -> None:
+        updates = {
+            "from_station": self._normalise_llm_station(data.get("from_station")),
+            "to_station": self._normalise_llm_station(data.get("to_station")),
+            "journey_type": data.get("journey_type"),
+            "depart_date": self._normalise_llm_date(data.get("depart_date")),
+            "depart_time_pref": self._normalise_llm_time_pref(data.get("depart_time_pref")),
+            "return_date": self._normalise_llm_date(data.get("return_date")),
+            "return_time_pref": self._normalise_llm_time_pref(data.get("return_time_pref")),
+        }
+
+        clean = {k: v for k, v in updates.items() if v not in (None, "", [])}
+
+        if clean.get("journey_type") == "single":
+            clean["return_date"] = None
+            clean["return_time_pref"] = None
+
+        print("[LLM FALLBACK] Applying extracted Gemini fields to ticket state:")
+        print(clean)
+        self.apply_updates(self.state.ticket, clean)
+        print("[LLM FALLBACK] Ticket state after Gemini application:")
+        print(self.state.ticket.to_dict())
+
+    def _apply_llm_delay_data(self, data: Dict[str, Any]) -> None:
+        updates = {
+            "current_station": self._normalise_llm_station(data.get("current_station")),
+            "destination": self._normalise_llm_station(data.get("destination") or data.get("to_station")),
+            "delay_minutes": data.get("delay_minutes"),
+        }
+
+        clean = {k: v for k, v in updates.items() if v not in (None, "", [])}
+
+        print("[LLM FALLBACK] Applying extracted Gemini fields to delay state:")
+        print(clean)
+        self.apply_updates(self.state.delay, clean)
+        print("[LLM FALLBACK] Delay state after Gemini application:")
+        print(self.state.delay.to_dict())
+
+    def _try_llm_final_extraction(self, text: str, reason: str, nlu=None) -> Optional[str]:
+        #Uses Gemini once as a final structured extraction attempt
+
+        #This function deliberately does not let Gemini answer the user
+        #Gemini only fills fields; then normal reasoning decides the next bot action
+        
+        local_context = {
+            "reason": reason,
+            "local_intent": getattr(nlu, "intent", None),
+            "local_confidence": getattr(nlu, "intent_confidence", None),
+            "local_source": getattr(nlu, "source", None),
+        }
+
+        data = self.parser.llm.extract_structured_data(
+            text=text,
+            current_state=self._state_snapshot(),
+            local_context=local_context,
+        )
+
+        if not data:
+            return None
+
+        intent = data.get("intent", "unknown")
+        confidence = float(data.get("confidence") or 0.0)
+
+        self.state.last_intent = intent
+        self.state.last_confidence = confidence
+        self.state.last_nlu_source = "gemini_fallback"
+
+        print(f"[LLM FALLBACK] Gemini selected intent='{intent}' confidence={confidence}")
+
+        note = self._llm_note(data)
+
+        #If the user is already inside a flow, respect that active task instead of 
+        #switching to a new intent that Gemini might have extracted
+        active_task = self.state.current_task
+        chosen_task = active_task if active_task in {"ticket", "delay"} else intent
+
+        if chosen_task == "ticket":
+            self.state.current_task = "ticket"
+            self._apply_llm_ticket_data(data)
+            return note + self._next_ticket_response()
+
+        if chosen_task == "delay":
+            self.state.current_task = "delay"
+            self._apply_llm_delay_data(data)
+            return note + self._next_delay_response()
+
+        if intent == "faq":
+            answer = self.kb.search(text)
+            if answer:
+                return note + answer
+
+        return None
+
+
+
     def _looks_like_slot_answer(self, text: str) -> bool:
         lower = text.lower().strip()
         if any(word in lower for word in [
@@ -118,6 +270,60 @@ class ConversationController:
         lower = text.lower().strip()
         return any(phrase in lower for phrase in OPEN_RETURN_PHRASES)
 
+    def _looks_like_general_faq(self, text: str) -> bool:
+        """
+        Return True only for general rail-policy/help questions that should go to the
+        knowledge base before Gemini. This prevents fuzzy KB matches from hijacking
+        real ticket or delay-prediction flows.
+        """
+        lower = text.lower().strip()
+
+        faq_starters = (
+            "what is", "what are", "how do i", "how can i", "can i",
+            "am i eligible", "do i need", "where can i", "when can i",
+            "tell me about", "explain", "difference between",
+            "i lost", "i left", "i forgot", "i need to file",
+        )
+
+        faq_topics = (
+            "delay repay", "compensation", "claim compensation", "refund",
+            "railcard", "off peak", "off-peak", "anytime ticket",
+            "advance ticket", "season ticket", "split ticket", "group save",
+            "oyster", "contactless", "bike", "luggage",
+            "lost property", "lost item", "lost bag", "lost luggage",
+            "left my bag", "forgot my bag", "missing bag", "lost my bag",
+            "accessibility", "disabled passenger", "e-ticket", "eticket",
+        )
+
+        return lower.startswith(faq_starters) or any(topic in lower for topic in faq_topics)
+
+    def _normalise_kb_query(self, text: str) -> str:
+        """
+        Convert common user phrases into the KB keyword that should be searched.
+        This avoids fuzzy matching returning unrelated answers, e.g. "lost bag"
+        accidentally matching "return ticket".
+        """
+        lower = text.lower().strip()
+
+        lost_property_phrases = (
+            "lost my bag", "lost bag", "lost luggage", "lost my luggage",
+            "left my bag", "forgot my bag", "missing bag", "i lost", "i left",
+            "i forgot", "lost item", "lost property",
+        )
+
+        compensation_phrases = (
+            "compensation", "claim compensation", "file for compensation",
+            "delay repay", "money back", "refund for delay", "delayed train refund",
+        )
+
+        if any(phrase in lower for phrase in lost_property_phrases):
+            return "lost property"
+
+        if any(phrase in lower for phrase in compensation_phrases):
+            return "delay repay compensation"
+
+        return text
+
     def handle_user_input(self, text: str) -> str:
         clean = text.lower().strip()
 
@@ -143,53 +349,113 @@ class ConversationController:
         if pending:
             return self._handle_pending(text, pending)
 
+        # Friend's new feature: live disruption/service-update queries.
         if self.state.current_task is None and is_disruption_query(text):
             result = get_disruptions()
             return result["message"]
 
         if self.state.current_task is None:
-            nlu = self.parser.understand(text)
+            nlu = self.parser.understand(text, self._state_snapshot())
             self.state.last_intent = nlu.intent
             self.state.last_confidence = nlu.intent_confidence
             self.state.last_nlu_source = nlu.source
 
             flow = decide_intent_with_rules(nlu.intent)
 
+            # 1. Strong delay intent must start delay prediction before KB.
+            # This stops messages like "my train got delayed" being answered
+            # by unrelated fuzzy KB matches.
+            if flow == "delay_flow" and nlu.intent_confidence >= 0.70:
+                self.state.current_task = "delay"
+                return self._delay_flow(text)
+
+            # 2. Clear general rail-policy/help questions go to KB before Gemini.
+            # This gives you "KB before LLM" without letting fuzzy KB hijack
+            # real ticket/delay flows.
+            if self._looks_like_general_faq(text):
+                kb_query = self._normalise_kb_query(text)
+                answer = self.kb.search(kb_query)
+                if answer:
+                    return answer
+
+            # 3. Strong ticket intent or an obvious journey request starts ticket flow.
+            # Low-confidence "ticket" predictions are not trusted unless the text
+            # actually looks like a journey request.
+            if flow == "ticket_flow" and (
+                nlu.intent_confidence >= 0.50 or self._looks_like_journey_request(text)
+            ):
+                self.state.current_task = "ticket"
+                return self._ticket_flow(text)
+
+            # 4. If local NLU is weak and KB did not answer, use Gemini fallback.
+            # Gemini still does not answer the user directly; it only fills slots,
+            # then the normal controller flow continues.
+            if nlu.needs_llm_fallback:
+                llm_response = self._try_llm_final_extraction(
+                    text,
+                    reason="local NLU confidence was low",
+                    nlu=nlu,
+                )
+                if llm_response:
+                    return llm_response
+
+            # 5. Normal rule-based routing after the safer checks above.
+            if flow == "delay_flow":
+                self.state.current_task = "delay"
+                return self._delay_flow(text)
+
             if flow == "ticket_flow":
                 self.state.current_task = "ticket"
+                return self._ticket_flow(text)
 
-            elif flow == "delay_flow":
-                if self._is_delay_faq(text):
-                    answer = self.kb.search(text)
-                    if answer:
-                        return answer
-                self.state.current_task = "delay"
+            if "disruption" in (nlu.intent or "").lower():
+                result = get_disruptions()
+                return result["message"]
 
-            else:
-                if "disruption" in (nlu.intent or "").lower():
-                    result = get_disruptions()
-                    return result["message"]
+            if self._looks_like_journey_request(text):
+                self.state.current_task = "ticket"
+                return self._ticket_flow(text)
 
-                if self._looks_like_journey_request(text):
-                    self.state.current_task = "ticket"
-                else:
-                    answer = self.kb.search(text)
-                    return answer if answer else self.prompts.fallback()
+            # 6. Last chance: Gemini, then fallback. Do not run broad KB here,
+            # because broad fuzzy matching caused wrong answers such as
+            # "lost bag" -> "return ticket".
+            llm_response = self._try_llm_final_extraction(
+                text,
+                reason="normal chatbot would have returned fallback",
+                nlu=nlu,
+            )
+            return llm_response if llm_response else self.prompts.fallback()
 
         if self.state.current_task == "ticket":
-            kb_answer = self.kb.search(text)
-            if kb_answer and not self._looks_like_slot_answer(text):
-                return kb_answer
+            # Keep active ticket flow focused on collecting journey slots.
+            # Clear FAQ questions can still be answered without hijacking slot answers.
+            if self._looks_like_general_faq(text) and not self._looks_like_slot_answer(text):
+                answer = self.kb.search(self._normalise_kb_query(text))
+                if answer:
+                    return answer
             return self._ticket_flow(text)
 
         if self.state.current_task == "delay":
-            kb_answer = self.kb.search(text)
-            if kb_answer and not self._looks_like_slot_answer(text):
-                return kb_answer
+            # Keep active delay flow focused on collecting delay slots.
+            # Clear FAQ questions such as compensation/Delay Repay can still be answered.
+            if self._looks_like_general_faq(text) and not self._looks_like_slot_answer(text):
+                answer = self.kb.search(self._normalise_kb_query(text))
+                if answer:
+                    return answer
             return self._delay_flow(text)
 
-        answer = self.kb.search(text)
-        return answer if answer else self.prompts.fallback()
+        if self._looks_like_general_faq(text):
+            answer = self.kb.search(self._normalise_kb_query(text))
+            if answer:
+                return answer
+
+        llm_response = self._try_llm_final_extraction(
+            text,
+            reason="normal chatbot reached final fallback",
+            nlu=None,
+        )
+        return llm_response if llm_response else self.prompts.fallback()
+
 
     def _handle_station_meta(self, extracted: Dict[str, Any], task: str) -> Optional[str]:
         if extracted.get("station_not_found"):
