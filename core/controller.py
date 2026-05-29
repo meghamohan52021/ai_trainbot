@@ -403,8 +403,7 @@ class ConversationController:
                 return self._ticket_flow(text)
 
             #Last chance: Gemini, then fallback. Do not run broad KB here,
-            # because broad fuzzy matching caused wrong answers such as
-            # "lost bag" -> "return ticket".
+            # because broad fuzzy matching caused wrong answers
             llm_response = self._try_llm_final_extraction(
                 text,
                 reason="normal chatbot would have returned fallback",

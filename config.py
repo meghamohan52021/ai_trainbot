@@ -17,7 +17,7 @@ def now_london():
 
 
 # Gemini fallback settings
-GEMINI_API_KEY = "AIzaSyCXE7wdvPhdT1Ix2hckPLnsda6a6eMN-E8"
+GEMINI_API_KEY = ""
 GEMINI_MODEL = "gemini-2.5-flash"
 
 GEMINI_API_URL = (
