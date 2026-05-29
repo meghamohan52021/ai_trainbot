@@ -271,11 +271,7 @@ class ConversationController:
         return any(phrase in lower for phrase in OPEN_RETURN_PHRASES)
 
     def _looks_like_general_faq(self, text: str) -> bool:
-        """
-        Return True only for general rail-policy/help questions that should go to the
-        knowledge base before Gemini. This prevents fuzzy KB matches from hijacking
-        real ticket or delay-prediction flows.
-        """
+        
         lower = text.lower().strip()
 
         faq_starters = (
@@ -298,11 +294,7 @@ class ConversationController:
         return lower.startswith(faq_starters) or any(topic in lower for topic in faq_topics)
 
     def _normalise_kb_query(self, text: str) -> str:
-        """
-        Convert common user phrases into the KB keyword that should be searched.
-        This avoids fuzzy matching returning unrelated answers, e.g. "lost bag"
-        accidentally matching "return ticket".
-        """
+        
         lower = text.lower().strip()
 
         lost_property_phrases = (
@@ -349,7 +341,7 @@ class ConversationController:
         if pending:
             return self._handle_pending(text, pending)
 
-        # Friend's new feature: live disruption/service-update queries.
+        #live disruption/service-update queries.
         if self.state.current_task is None and is_disruption_query(text):
             result = get_disruptions()
             return result["message"]
@@ -362,32 +354,26 @@ class ConversationController:
 
             flow = decide_intent_with_rules(nlu.intent)
 
-            # 1. Strong delay intent must start delay prediction before KB.
-            # This stops messages like "my train got delayed" being answered
-            # by unrelated fuzzy KB matches.
+            #Strong delay intent must start delay prediction before KB.
             if flow == "delay_flow" and nlu.intent_confidence >= 0.70:
                 self.state.current_task = "delay"
                 return self._delay_flow(text)
 
-            # 2. Clear general rail-policy/help questions go to KB before Gemini.
-            # This gives you "KB before LLM" without letting fuzzy KB hijack
-            # real ticket/delay flows.
+            #Clear general rail-policy/help questions go to KB before Gemini.
             if self._looks_like_general_faq(text):
                 kb_query = self._normalise_kb_query(text)
                 answer = self.kb.search(kb_query)
                 if answer:
                     return answer
 
-            # 3. Strong ticket intent or an obvious journey request starts ticket flow.
-            # Low-confidence "ticket" predictions are not trusted unless the text
-            # actually looks like a journey request.
+            #Strong ticket intent or an obvious journey request starts ticket flow.
             if flow == "ticket_flow" and (
                 nlu.intent_confidence >= 0.50 or self._looks_like_journey_request(text)
             ):
                 self.state.current_task = "ticket"
                 return self._ticket_flow(text)
 
-            # 4. If local NLU is weak and KB did not answer, use Gemini fallback.
+            #If local NLU is weak and KB did not answer, use Gemini fallback.
             # Gemini still does not answer the user directly; it only fills slots,
             # then the normal controller flow continues.
             if nlu.needs_llm_fallback:
@@ -399,7 +385,7 @@ class ConversationController:
                 if llm_response:
                     return llm_response
 
-            # 5. Normal rule-based routing after the safer checks above.
+            #Normal rule-based routing after the safer checks above.
             if flow == "delay_flow":
                 self.state.current_task = "delay"
                 return self._delay_flow(text)
@@ -416,7 +402,7 @@ class ConversationController:
                 self.state.current_task = "ticket"
                 return self._ticket_flow(text)
 
-            # 6. Last chance: Gemini, then fallback. Do not run broad KB here,
+            #Last chance: Gemini, then fallback. Do not run broad KB here,
             # because broad fuzzy matching caused wrong answers such as
             # "lost bag" -> "return ticket".
             llm_response = self._try_llm_final_extraction(
@@ -427,8 +413,6 @@ class ConversationController:
             return llm_response if llm_response else self.prompts.fallback()
 
         if self.state.current_task == "ticket":
-            # Keep active ticket flow focused on collecting journey slots.
-            # Clear FAQ questions can still be answered without hijacking slot answers.
             if self._looks_like_general_faq(text) and not self._looks_like_slot_answer(text):
                 answer = self.kb.search(self._normalise_kb_query(text))
                 if answer:
@@ -436,8 +420,6 @@ class ConversationController:
             return self._ticket_flow(text)
 
         if self.state.current_task == "delay":
-            # Keep active delay flow focused on collecting delay slots.
-            # Clear FAQ questions such as compensation/Delay Repay can still be answered.
             if self._looks_like_general_faq(text) and not self._looks_like_slot_answer(text):
                 answer = self.kb.search(self._normalise_kb_query(text))
                 if answer:
