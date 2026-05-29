@@ -1,18 +1,25 @@
 import re
 from typing import Dict, Optional, List, Any, Tuple
 
-from number_normalizer import extract_delay_minutes, words_to_int
-from station_data import STATION_ALIASES
-from temporal_parser import (
+from nlp.nlp_engine import SpacyNLPEngine
+from nlp.intent_classifier import IntentClassifier
+from nlp.entity_extractor import EntityExtractor
+from nlp.temporal_parser import (
     parse_natural_dates,
     extract_time_preferences,
     infer_return_date_from_duration,
 )
-from entity_extractor import EntityExtractor
-from intent_classifier import IntentClassifier
-from nlu_result import NLUResult
-from station_matcher import StationMatcher, StationMatch
-from nlp_engine import SpacyNLPEngine
+from nlp.number_normalizer import extract_delay_minutes, words_to_int
+from nlp.station_matcher import StationMatcher, StationMatch
+from nlp.station_data import STATION_ALIASES
+from nlp.nlu_result import NLUResult
+
+# Phrases that mean "open/flexible return" and must never be sent to the station matcher
+OPEN_RETURN_PHRASES = {
+    "open return", "open ticket", "flexible return", "no return date",
+    "not sure when i'm coming back", "not sure when im coming back",
+    "flexible", "no preference", "don't know when", "dont know when",
+}
 
 
 class LLMParser:
@@ -198,7 +205,7 @@ class LLMParser:
             if (
                 current_state.get("journey_type") == "return"
                 and current_state.get("depart_date") not in (None, "", [])
-                and current_state.get("return_date") in (None, "", [])
+                and current_state.get("return_date") in (None, "", [], "open")
             ):
                 extracted["return_date"] = only_date
             else:
@@ -351,12 +358,16 @@ class LLMParser:
 
     @staticmethod
     def _is_non_station_ticket_input(text_lower: str) -> bool:
-        # Prevent dates/times/random full sentences from being reported as unknown stations.
+        """Prevent dates/times/open return phrases from being reported as unknown stations."""
         if not text_lower:
             return True
 
         clean = re.sub(r"[^a-z0-9: ]+", " ", text_lower.lower())
         clean = re.sub(r"\s+", " ", clean).strip()
+
+        # Open return / flexible return phrases must never reach the station matcher
+        if any(phrase in clean for phrase in OPEN_RETURN_PHRASES):
+            return True
 
         if clean in {
             "single", "return", "one way", "one way ticket",
@@ -390,7 +401,7 @@ class LLMParser:
     def _looks_like_station_answer(text_lower: str) -> bool:
         if not text_lower or len(text_lower.split()) > 5:
             return False
-        if any(w in text_lower for w in ["tomorrow", "today", "single", "return", "after", "before", "morning", "afternoon", "evening"]):
+        if any(w in text_lower for w in ["tomorrow", "today", "single", "return", "after", "before", "morning", "afternoon", "evening", "open", "flexible"]):
             return False
         return bool(re.search(r"[a-z]", text_lower))
 

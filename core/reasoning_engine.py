@@ -155,7 +155,7 @@ def decide_next_delay_action(missing: List[str]) -> str:
     )
 
 
-def post_prediction_advice(predicted_delay: int | float) -> str:
+def post_prediction_advice(predicted_delay) -> str:
     #Give Delay Repay style advice after the prediction model returns a delay.
     return _run_engine(
         {"kind": "prediction_advice", "predicted_delay": float(predicted_delay)},

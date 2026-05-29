@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
-from station_data import STATION_CODES
+from nlp.station_data import STATION_CODES
+from adapters.delay_repay import check_delay_repay
 
 _DELAY_DIR = Path(__file__).parent / "delay_prediction"
 if _DELAY_DIR.exists() and str(_DELAY_DIR) not in sys.path:
@@ -9,7 +9,7 @@ if _DELAY_DIR.exists() and str(_DELAY_DIR) not in sys.path:
 
 
 class DelayPredictionAdapter:
-    #This adapter serves as a bridge between the controller and the delay prediction component
+    # This adapter serves as a bridge between the controller and the delay prediction component
 
     def _resolve_crs(self, station):
         if not station:
@@ -18,7 +18,6 @@ class DelayPredictionAdapter:
         if len(value) == 3 and value.isalpha():
             return value.upper()
         return STATION_CODES.get(value)
-
 
     def predict_arrival(self, delay_dict: dict) -> dict:
         current_station = delay_dict.get("current_station")
@@ -62,29 +61,42 @@ class DelayPredictionAdapter:
 
             predicted_time = result.get("predicted_arrival_time", "unknown")
             predicted_delay = result.get("predicted_delay_minutes", "unknown")
+
+            # Check Delay Repay eligibility
+            operator = "South Western Railway"  # default for Weymouth-Waterloo route
+            delay_repay_msg = check_delay_repay(predicted_delay, operator)
+
             return {
                 "status": "ok",
                 "message": (
-                    f"Current station: {current_station} ({current_crs})\n"
-                    f"Current delay: {delay_minutes} minutes\n"
-                    f"Destination: {destination} ({destination_crs})\n\n"
-                    f"Predicted arrival time: {predicted_time}\n"
+                    f"Current station: {current_station} ({current_crs})<br>"
+                    f"Current delay: {delay_minutes} minutes<br>"
+                    f"Destination: {destination} ({destination_crs})<br><br>"
+                    f"<b>Predicted arrival time: {predicted_time}</b><br>"
                     f"Predicted final delay: {predicted_delay} minutes"
+                    f"{delay_repay_msg}"
                 ),
                 "input": delay_dict,
                 "prediction": result,
             }
 
         except FileNotFoundError:
+            # Model not trained yet - still show delay repay based on current delay
+            delay_repay_msg = check_delay_repay(delay_minutes, "South Western Railway")
+
             return {
                 "status": "error",
                 "message": (
-                "The trained delay prediction model is not available.\n\n"
-                "Please check that these files exist:\n"
-                "delay_prediction/models/champion_WEY2WAT.joblib\n"
-                "delay_prediction/models/champion_WAT2WEY.joblib\n\n"
-                "Run delay_prediction/train.py or add the trained model files before using delay prediction."
-                ),}
+                    f"Current station: {current_station} ({current_crs})<br>"
+                    f"Current delay: {delay_minutes} minutes<br>"
+                    f"Destination: {destination} ({destination_crs})<br><br>"
+                    f"<b>Note:</b> The trained delay prediction model is not available. "
+                    f"Showing Delay Repay guidance based on your current delay."
+                    f"{delay_repay_msg}"
+                ),
+                "input": delay_dict,
+            }
+
         except Exception as exc:
             return {
                 "status": "error",

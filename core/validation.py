@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import List, Optional
-from station_data import STATION_ALIASES
+from nlp.station_data import STATION_ALIASES
 
 
 class ValidationEngine:
@@ -74,14 +74,17 @@ class ValidationEngine:
         if state.depart_date and not cls.valid_date(state.depart_date):
             errors.append("Departure date must be YYYY-MM-DD.")
 
-        if state.return_date and not cls.valid_date(state.return_date):
+        if state.return_date and state.return_date != "open" and not cls.valid_date(state.return_date):
             errors.append("Return date must be YYYY-MM-DD.")
 
-        if state.depart_date and state.return_date:
+        if state.depart_date and state.return_date and state.return_date != "open":
             depart = datetime.strptime(state.depart_date, "%Y-%m-%d")
             ret = datetime.strptime(state.return_date, "%Y-%m-%d")
             if ret < depart:
                 errors.append("Return date must be after the departure date.")
+        
+
+        
 
         if not cls.valid_time_pref(state.depart_time_pref):
             errors.append("Departure time preference is invalid.")

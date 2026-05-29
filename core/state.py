@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, List
+from datetime import date
 
 
 @dataclass
@@ -22,7 +23,9 @@ class JourneyState:
             "depart_time_pref",
         ]
         if self.journey_type == "return":
-            needed.append("return_date")
+            # "open" is a valid return_date value — user has chosen an open return
+            if self.return_date != "open":
+                needed.append("return_date")
         return [slot for slot in needed if getattr(self, slot) in (None, "", [])]
 
     def is_complete(self):
@@ -32,36 +35,63 @@ class JourneyState:
         return asdict(self)
 
     @staticmethod
-    def _format_time_pref(pref):
+    def _format_date(d: Optional[str]) -> str:
+        if not d:
+            return "Not set"
+        if d == "open":
+            return "Open return (flexible)"
+        try:
+            return date.fromisoformat(d).strftime("%A %d %B %Y")
+        except Exception:
+            return d
+
+    @staticmethod
+    def _format_time_pref(pref) -> str:
         if not pref:
-            return "None"
-        if pref.get("type") == "any":
-            return "Any time"
-        if pref.get("type") == "between":
-            return f"Between {pref.get('start')} and {pref.get('end')}"
-        if pref.get("type") in {"before", "after", "at"}:
-            return f"{pref.get('type').title()} {pref.get('time')}"
+            return "No preference"
+        t = pref.get("type")
+        if t == "any":
+            return "No preference"
+        if t == "between":
+            labels = {
+                ("07:00", "11:59"): "Morning",
+                ("12:00", "17:59"): "Afternoon",
+                ("18:00", "21:59"): "Evening",
+                ("20:00", "23:59"): "Night",
+            }
+            key = (pref.get("start"), pref.get("end"))
+            return labels.get(key, f"{pref.get('start')} to {pref.get('end')}")
+        if t == "before":
+            return f"Before {pref.get('time')}"
+        if t == "after":
+            return f"After {pref.get('time')}"
+        if t == "at":
+            return f"At {pref.get('time')}"
         return str(pref)
 
     def summary(self):
+        journey_label = (
+            "Single" if self.journey_type == "single"
+            else "Return" if self.journey_type == "return"
+            else "Not set"
+        )
         lines = [
             f"From: {self.from_station or 'Not set'}",
             f"To: {self.to_station or 'Not set'}",
-            f"Type: {self.journey_type or 'Not set'}",
-            f"Depart date: {self.depart_date or 'Not set'}",
-            f"Depart time: {self._format_time_pref(self.depart_time_pref)}",
+            f"Journey type: {journey_label}",
+            f"Departure: {self._format_date(self.depart_date)}, {self._format_time_pref(self.depart_time_pref)}",
         ]
         if self.journey_type == "return":
-            lines.append(f"Return date: {self.return_date or 'Not set'}")
-            lines.append(f"Return time: {self._format_time_pref(self.return_time_pref)}")
-        if self.duration_options:
-            lines.append(f"Trip duration options: {self.duration_options}")
+            if self.return_date == "open":
+                lines.append("Return: Open return (flexible date)")
+            else:
+                lines.append(f"Return: {self._format_date(self.return_date)}, {self._format_time_pref(self.return_time_pref)}")
         return "\n".join(lines)
 
 
 @dataclass
 class DelayState:
-    train_id: Optional[str] = None #train_id only as an optional
+    train_id: Optional[str] = None
     current_station: Optional[str] = None
     delay_minutes: Optional[int] = None
     destination: Optional[str] = None
@@ -77,9 +107,14 @@ class DelayState:
         return asdict(self)
 
     def summary(self):
+        delay_text = (
+            f"{self.delay_minutes} minutes"
+            if self.delay_minutes is not None
+            else "Not set"
+        )
         return (
             f"Current station: {self.current_station or 'Not set'}\n"
-            f"Delay: {self.delay_minutes if self.delay_minutes is not None else 'Not set'} minutes\n"
+            f"Current delay: {delay_text}\n"
             f"Destination: {self.destination or 'Not set'}"
         )
 

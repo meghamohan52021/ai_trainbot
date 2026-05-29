@@ -1,22 +1,34 @@
 from typing import Any, Dict, Optional
 
-from state import ChatState, JourneyState, DelayState
-from parser import LLMParser
-from validation import ValidationEngine
-from prompts import PromptManager
-from ticket_adapter import TicketSearchAdapter
-from delay_adapter import DelayPredictionAdapter
-from kb import KnowledgeBase
-from reasoning_engine import (
+from core.state import ChatState, JourneyState, DelayState
+from core.validation import ValidationEngine
+from core.prompts import PromptManager
+from core.reasoning_engine import (
     decide_intent_with_rules,
     decide_next_ticket_action,
     decide_next_delay_action,
 )
-from slot_manager import SlotManager
+from core.slot_manager import SlotManager
+
+from nlp.parser import LLMParser
+from adapters.ticket_adapter import TicketSearchAdapter
+from adapters.delay_adapter import DelayPredictionAdapter
+from adapters.disruptions_adapter import get_disruptions, is_disruption_query
+from knowledge.kb import KnowledgeBase
+
+DELAY_FAQ_PHRASES = {
+    "delay repay", "compensation", "claim compensation", "how much compensation",
+    "am i eligible", "get money back", "refund for delay", "delayed train refund"
+}
+
+OPEN_RETURN_PHRASES = {
+    "open return", "open ticket", "flexible return", "no return date",
+    "not sure when i'm coming back", "not sure when im coming back",
+    "flexible", "no preference", "don't know when", "dont know when",
+}
 
 
 class ConversationController:
-    #Controls the chatbot dialogue for ticket search and delay prediction
 
     YES_WORDS = {"yes", "y", "correct", "yeah", "yep", "sure", "ok", "okay"}
     NO_WORDS = {"no", "n", "wrong", "incorrect", "change", "edit", "not correct"}
@@ -34,7 +46,6 @@ class ConversationController:
         self.confirm_delay = False
         self.pending_station_candidates = []
 
-    #State helpers
     def _set_pending(self, value: Optional[str]) -> None:
         self.state.pending_correction_slot = value
 
@@ -79,13 +90,40 @@ class ConversationController:
         self._clear_pending()
         return "You're welcome. Safe travels!"
 
-    #Main entry point
+    def _looks_like_slot_answer(self, text: str) -> bool:
+        lower = text.lower().strip()
+        if any(word in lower for word in [
+            "tomorrow", "today", "monday", "tuesday", "wednesday", "thursday",
+            "friday", "saturday", "sunday", "morning", "afternoon", "evening",
+            "single", "return", "yes", "no", "after", "before", "am", "pm",
+            "minutes", "mins", "hour", "open", "flexible"
+        ]):
+            return True
+        if lower.replace(" ", "").isdigit():
+            return True
+        return False
+
+    def _looks_like_journey_request(self, text: str) -> bool:
+        lower = text.lower().strip()
+        if " to " in lower and len(lower.split()) >= 3:
+            return True
+        starters = ["from ", "go to ", "travel to ", "i want to go", "get me to", "i need to go"]
+        return any(s in lower for s in starters)
+
+    def _is_delay_faq(self, text: str) -> bool:
+        lower = text.lower().strip()
+        return any(phrase in lower for phrase in DELAY_FAQ_PHRASES)
+
+    def _is_open_return_phrase(self, text: str) -> bool:
+        lower = text.lower().strip()
+        return any(phrase in lower for phrase in OPEN_RETURN_PHRASES)
+
     def handle_user_input(self, text: str) -> str:
         clean = text.lower().strip()
 
         if clean in {"restart", "reset"}:
             return self._reset()
-        
+
         if clean in {"hi", "hello", "hey", "hiya", "good morning", "good afternoon", "good evening"}:
             return (
                 "Hi! I can help you find train tickets, check delay predictions, "
@@ -105,6 +143,10 @@ class ConversationController:
         if pending:
             return self._handle_pending(text, pending)
 
+        if self.state.current_task is None and is_disruption_query(text):
+            result = get_disruptions()
+            return result["message"]
+
         if self.state.current_task is None:
             nlu = self.parser.understand(text)
             self.state.last_intent = nlu.intent
@@ -112,24 +154,43 @@ class ConversationController:
             self.state.last_nlu_source = nlu.source
 
             flow = decide_intent_with_rules(nlu.intent)
+
             if flow == "ticket_flow":
                 self.state.current_task = "ticket"
+
             elif flow == "delay_flow":
+                if self._is_delay_faq(text):
+                    answer = self.kb.search(text)
+                    if answer:
+                        return answer
                 self.state.current_task = "delay"
+
             else:
-                answer = self.kb.search(text)
-                return answer if answer else self.prompts.fallback()
+                if "disruption" in (nlu.intent or "").lower():
+                    result = get_disruptions()
+                    return result["message"]
+
+                if self._looks_like_journey_request(text):
+                    self.state.current_task = "ticket"
+                else:
+                    answer = self.kb.search(text)
+                    return answer if answer else self.prompts.fallback()
 
         if self.state.current_task == "ticket":
+            kb_answer = self.kb.search(text)
+            if kb_answer and not self._looks_like_slot_answer(text):
+                return kb_answer
             return self._ticket_flow(text)
 
         if self.state.current_task == "delay":
+            kb_answer = self.kb.search(text)
+            if kb_answer and not self._looks_like_slot_answer(text):
+                return kb_answer
             return self._delay_flow(text)
 
         answer = self.kb.search(text)
         return answer if answer else self.prompts.fallback()
 
-    #Station ambiguity handling
     def _handle_station_meta(self, extracted: Dict[str, Any], task: str) -> Optional[str]:
         if extracted.get("station_not_found"):
             bad = extracted["station_not_found"]
@@ -197,10 +258,18 @@ class ConversationController:
         )
         return f"I found several matching stations. Which one do you mean?\n\n{options}"
 
-    #Ticket flow
     def _ticket_flow(self, text: str) -> str:
-        clear = self.slot_manager.detect_corrections(text, task="ticket")
-        self.slot_manager.clear_slots(self.state.ticket, clear)
+        # Intercept open return before the parser tries to match it as a station name
+        if self._is_open_return_phrase(text):
+            if self.state.ticket.journey_type in ("return", None):
+                self.state.ticket.journey_type = "return"
+                self.state.ticket.return_date = "open"
+                self.state.ticket.return_time_pref = None
+                return self._next_ticket_response()
+
+        if self.state.ticket.from_station or self.state.ticket.to_station:
+            clear = self.slot_manager.detect_corrections(text, task="ticket")
+            self.slot_manager.clear_slots(self.state.ticket, clear)
 
         extracted = self.parser.extract(text, self.state.ticket.to_dict(), task="ticket")
         meta = self._handle_station_meta(extracted, task="ticket")
@@ -224,13 +293,17 @@ class ConversationController:
             return self.prompts.confirm_summary(self.state.ticket.summary())
 
         if missing:
-            self._set_pending(f"ticket:{missing[0]}")
-        return action
+            slot = missing[0]
+            self._set_pending(f"ticket:{slot}")
+            return self.prompts.ask_for(slot, context=self.state.ticket.to_dict())
+
+        return self.prompts.fallback()
 
     def _confirm_ticket(self, text: str) -> str:
         answer = text.lower().strip()
+        first_word = answer.split()[0] if answer.split() else answer
 
-        if answer in self.YES_WORDS:
+        if answer in self.YES_WORDS or first_word in self.YES_WORDS:
             result = self.ticket_search.search_cheapest(self.state.ticket.to_dict())
             self.confirm_ticket = False
             self.state.current_task = None
@@ -238,7 +311,7 @@ class ConversationController:
             self._clear_pending()
             return f"Great — your journey details are complete.\n\n{result['message']}"
 
-        if answer in self.NO_WORDS:
+        if answer in self.NO_WORDS or first_word in self.NO_WORDS:
             self.confirm_ticket = False
             self._set_pending("ticket_change")
             return (
@@ -249,15 +322,11 @@ class ConversationController:
         target = self._classify_ticket_correction_target(text)
         if target:
             self.confirm_ticket = False
-
-            #if the user gives the correction and the new value in one message,
-            #e.g. "return time 11am" or "departure time 3pm", apply it immediately
             updated = self._update_specific_ticket_slot(target, text)
             if updated:
                 self._clear_pending()
                 self.state.current_task = "ticket"
                 return self._next_ticket_response()
-
             self._set_pending(f"ticket:{target}")
             return self._ask_for_ticket_correction(target)
 
@@ -278,20 +347,25 @@ class ConversationController:
     def _classify_ticket_correction_target(self, text: str) -> Optional[str]:
         lower = text.lower().strip()
         exact = {
-            "return time": "return_time_pref", "coming back time": "return_time_pref", "come back time": "return_time_pref", "back time": "return_time_pref",
-            "time": "depart_time_pref", "depart time": "depart_time_pref", "departure time": "depart_time_pref", "outbound time": "depart_time_pref",
-            "date": "depart_date", "day": "depart_date", "depart date": "depart_date", "departure date": "depart_date",
-            "return date": "return_date", "coming back date": "return_date", "come back date": "return_date", "back date": "return_date",
-            "destination": "to_station", "to station": "to_station", "arrival station": "to_station",
-            "departure station": "from_station", "from station": "from_station", "origin": "from_station",
-            "journey type": "journey_type", "ticket type": "journey_type", "single": "journey_type", "return": "journey_type",
+            "return time": "return_time_pref", "coming back time": "return_time_pref",
+            "come back time": "return_time_pref", "back time": "return_time_pref",
+            "time": "depart_time_pref", "depart time": "depart_time_pref",
+            "departure time": "depart_time_pref", "outbound time": "depart_time_pref",
+            "date": "depart_date", "day": "depart_date",
+            "depart date": "depart_date", "departure date": "depart_date",
+            "return date": "return_date", "coming back date": "return_date",
+            "come back date": "return_date", "back date": "return_date",
+            "destination": "to_station", "to station": "to_station",
+            "arrival station": "to_station",
+            "departure station": "from_station", "from station": "from_station",
+            "origin": "from_station",
+            "journey type": "journey_type", "ticket type": "journey_type",
+            "single": "journey_type", "return": "journey_type",
         }
         if lower in exact:
             return exact[lower]
 
         keywords = {
-            #to check return-specific fields before generic "time"/"date" so
-            #"return time 11am" does not get mistaken for outbound departure time.
             "return_time_pref": ["return time", "coming back time", "come back time", "back time", "inbound time"],
             "return_date": ["return date", "coming back date", "come back date", "back date"],
             "depart_time_pref": ["depart time", "departure time", "outbound time", "time", "leave", "leaving", "after", "before", "morning", "afternoon", "evening"],
@@ -311,7 +385,7 @@ class ConversationController:
             "to_station": "Sure — what destination station should I use?",
             "depart_date": "Sure — what date are you travelling? You can say 'tomorrow' or '15 July'.",
             "depart_time_pref": "Sure — what departure time do you prefer? For example: 'morning', 'before 10am', or 'after 2pm'.",
-            "return_date": "Sure — what date are you coming back?",
+            "return_date": "Sure — what date are you coming back? You can also say 'open return' if the date is flexible.",
             "return_time_pref": "Sure — what return time do you prefer? For example: 'after 2pm'.",
             "journey_type": "Sure — is this a single or return journey?",
         }
@@ -319,6 +393,13 @@ class ConversationController:
 
     def _update_specific_ticket_slot(self, slot: str, text: str) -> bool:
         lower = text.lower().strip()
+
+        # Handle open return for both return_date and journey_type slots
+        if slot in {"return_date", "journey_type"} and self._is_open_return_phrase(text):
+            self.state.ticket.journey_type = "return"
+            self.state.ticket.return_date = "open"
+            self.state.ticket.return_time_pref = None
+            return True
 
         if slot in {"from_station", "to_station"}:
             match = self.parser.match_station_with_status(text)
@@ -346,8 +427,6 @@ class ConversationController:
 
         if extracted.get(slot) not in (None, "", []):
             setattr(self.state.ticket, slot, extracted[slot])
-
-            #to preserve extra useful values from the same answer.
             if slot == "depart_date" and extracted.get("depart_time_pref"):
                 self.state.ticket.depart_time_pref = extracted["depart_time_pref"]
             if slot == "depart_time_pref" and extracted.get("depart_date") and not self.state.ticket.depart_date:
@@ -361,7 +440,6 @@ class ConversationController:
                 self.state.ticket.return_date = extracted["return_date"]
             return True
 
-        #when the bot asks for a return value and the parser treats it as a departure value.
         if slot == "return_date" and extracted.get("depart_date"):
             self.state.ticket.return_date = extracted["depart_date"]
             return True
@@ -384,12 +462,11 @@ class ConversationController:
             "journey_type": "I still need to know whether this is single or return.",
             "depart_date": "I still need the travel date. For example: 'tomorrow' or '15 July'.",
             "depart_time_pref": "I still need the departure time. For example: 'morning', 'before 10am', or 'after 2pm'.",
-            "return_date": "I still need the return date. For example: '30 July'.",
+            "return_date": "I still need the return date. For example: '30 July'. You can also say 'open return' if the date is flexible.",
             "return_time_pref": "I still need the return time. For example: 'after 2pm' or 'no preference'.",
         }
         return prompts.get(slot, "I still need that detail.")
 
-    #Delay flow
     def _delay_flow(self, text: str) -> str:
         clear = self.slot_manager.detect_corrections(text, task="delay")
         self.slot_manager.clear_slots(self.state.delay, clear)
@@ -399,7 +476,6 @@ class ConversationController:
         if meta:
             return meta
 
-        #optional and not required by the prediction model
         extracted.pop("train_id", None)
         self.apply_updates(self.state.delay, extracted)
         return self._next_delay_response()
@@ -422,13 +498,17 @@ class ConversationController:
             )
 
         if missing:
-            self._set_pending(f"delay:{missing[0]}")
-        return action
+            slot = missing[0]
+            self._set_pending(f"delay:{slot}")
+            return self.prompts.ask_for(slot, context=self.state.delay.to_dict())
+
+        return self.prompts.fallback()
 
     def _confirm_delay(self, text: str) -> str:
         answer = text.lower().strip()
+        first_word = answer.split()[0] if answer.split() else answer
 
-        if answer in self.YES_WORDS:
+        if answer in self.YES_WORDS or first_word in self.YES_WORDS:
             result = self.delay_predictor.predict_arrival(self.state.delay.to_dict())
             self.confirm_delay = False
             self.state.current_task = None
@@ -436,7 +516,7 @@ class ConversationController:
             self._clear_pending()
             return f"Great — the delay details are complete.\n\n{result['message']}"
 
-        if answer in self.NO_WORDS:
+        if answer in self.NO_WORDS or first_word in self.NO_WORDS:
             self.confirm_delay = False
             self._set_pending("delay_change")
             return "No problem. What needs changing? You can say: current station, delay, or destination."
@@ -472,7 +552,6 @@ class ConversationController:
         lower = clean.lower()
 
         if slot in {"current_station", "destination"}:
-            #First try full delay extraction. This lets a user answer with a full sentence
             extracted = self.parser.extract(clean, self.state.delay.to_dict(), task="delay")
 
             if extracted.get(slot) not in (None, "", []):
@@ -483,12 +562,10 @@ class ConversationController:
                     return False
                 return True
 
-            #If the full extraction found an ambiguity for this slot, ask the user to choose
             if extracted.get("station_ambiguity") and extracted["station_ambiguity"].get("slot") == slot:
                 self._handle_station_meta(extracted, task="delay")
                 return False
 
-            #Fallback: treat the answer as just a station name.
             match = self.parser.match_station_with_status(clean)
             if match.status == "exact":
                 setattr(self.state.delay, slot, match.station)
@@ -520,7 +597,6 @@ class ConversationController:
         }
         return prompts.get(slot, "I still need that detail.")
 
-    # Pending slot handling
     def _handle_pending(self, text: str, pending: str) -> str:
         if pending.startswith("choose_station:"):
             return self._resolve_station_choice(text, pending)
@@ -530,7 +606,6 @@ class ConversationController:
             if target:
                 self._set_pending(f"ticket:{target}")
                 return self._ask_for_ticket_correction(target)
-            #Also allow a full correction sentence like "change destination to Cambridge"
             self._clear_pending()
             self.state.current_task = "ticket"
             return self._ticket_flow(text)
@@ -547,9 +622,6 @@ class ConversationController:
         if pending.startswith("ticket:"):
             slot = pending.split(":", 1)[1]
 
-            #If the user is answering a prompt but explicitly says another slot,
-            #honour the explicit correction. Example: when the bot asks for departure time,
-            #user says "return time 11am"
             explicit_target = self._classify_ticket_correction_target(text)
             if explicit_target and explicit_target != slot and self._has_explicit_ticket_slot_label(text):
                 slot = explicit_target
@@ -577,7 +649,6 @@ class ConversationController:
         self._clear_pending()
         return self.prompts.fallback()
 
-    # CLI runner
     def run(self):
         print(self.prompts.greeting())
         while True:

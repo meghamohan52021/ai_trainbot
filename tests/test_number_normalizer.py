@@ -1,6 +1,6 @@
 import pytest
 
-from number_normalizer import extract_delay_minutes
+from nlp.number_normalizer import extract_delay_minutes
 
 
 @pytest.mark.parametrize(

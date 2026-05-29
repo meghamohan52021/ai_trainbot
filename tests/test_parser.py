@@ -1,4 +1,4 @@
-from parser import LLMParser
+from nlp.parser import LLMParser
 
 
 def test_ticket_intent_detected():

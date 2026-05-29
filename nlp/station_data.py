@@ -8,7 +8,7 @@ STATION_CODES = {}  #CRS code
 def load_station_data():
     global STATION_ALIASES, STATION_CODES
 
-    csv_path = Path(__file__).parent / "StationNameAndCode.csv"
+    csv_path = Path(__file__).resolve().parent.parent / "StationNameAndCode.csv"
 
     try:
         with open(csv_path, newline="", encoding="utf-8") as file:

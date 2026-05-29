@@ -60,7 +60,7 @@ def initialise_db():
 
 
 def seed_stations():
-    csv_path = os.path.join(os.path.dirname(__file__), "StationNameAndCode.csv")
+    csv_path = os.path.join(os.path.dirname(__file__), "..", "StationNameAndCode.csv")
     if not os.path.exists(csv_path):
         print("Warning: StationNameAndCode.csv not found.")
         return

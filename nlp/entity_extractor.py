@@ -1,9 +1,9 @@
 import re
 from rapidfuzz import process, fuzz
 
-from station_data import STATION_ALIASES
+from nlp.station_data import STATION_ALIASES
 from config import FUZZY_STATION_THRESHOLD
-from number_normalizer import extract_delay_minutes
+from nlp.number_normalizer import extract_delay_minutes
 
 
 class EntityExtractor:

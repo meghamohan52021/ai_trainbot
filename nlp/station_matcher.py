@@ -63,7 +63,7 @@ class StationMatcher:
 
     def __init__(self, station_aliases: Optional[Dict[str, str]] = None, max_ngram: int = 6):
         if station_aliases is None:
-            from station_data import STATION_ALIASES
+            from nlp.station_data import STATION_ALIASES
             station_aliases = STATION_ALIASES
 
         self.station_aliases = station_aliases

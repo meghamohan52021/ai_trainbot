@@ -105,7 +105,7 @@ class SpacyNLPEngine:
         query: str,
         candidates: List[str],
         threshold: float = 0.65,
-    ) -> Tuple[str | None, float]:
+    ) -> Tuple[Optional[str], float]:
         best_text = None
         best_score = 0.0
 

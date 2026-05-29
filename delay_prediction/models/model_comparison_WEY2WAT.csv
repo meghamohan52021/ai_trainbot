@@ -1,7 +1,7 @@
 ,MAE,RMSE,R2
 Persistence (baseline),5.729,22.892,-3.2611
-Ridge,6.508,10.757,0.0591
-kNN-10,5.726,9.944,0.196
-kNN-10 (weighted),5.933,10.412,0.1185
-Random Forest,5.31,9.346,0.2898
-Gradient Boosting,5.281,9.27,0.3012
+Ridge,6.508,10.75,0.0603
+kNN-10,6.556,11.122,-0.0057
+kNN-10 (weighted),6.565,11.17,-0.0145
+Random Forest,5.446,9.662,0.241
+Gradient Boosting,5.273,9.164,0.3171

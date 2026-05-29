@@ -1,3 +1,4 @@
+from typing import Optional, Tuple
 import re
 from datetime import timedelta, date
 from config import now_london
@@ -36,7 +37,7 @@ WEEKDAYS = {
 }
 
 
-def _future_date(day: int, month: int, year: int | None = None) -> date | None:
+def _future_date(day: int, month: int, year: Optional[int] = None) -> Optional[date]:
     today = now_london().date()
     if year is None:
         year = today.year
@@ -73,7 +74,7 @@ def parse_natural_dates(text: str):
     found: list[str] = []
     today = now_london().date()
 
-    def add(d: date | None):
+    def add(d):
         if d is None:
             return
         iso = d.isoformat()
