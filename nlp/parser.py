@@ -45,14 +45,14 @@ class LLMParser:
         self.station_matcher = StationMatcher(STATION_ALIASES)
         self.llm = LLMClient()
 
-    # Basic text processing
+    #Basic text processing
     def tokenize(self, text: str) -> List[str]:
         return self.nlp.analyse(text).tokens
 
     def lemmatize(self, text: str) -> List[str]:
         return self.nlp.analyse(text).lemmas
 
-    # Intent detection with spaCy + ML + rule-based adjustments
+    #Intent detection with spaCy+ML+rule-based adjustments
     def understand(self, text: str, current_state: Optional[Dict[str, Any]] = None) -> NLUResult:
         current_state = current_state or {}
         lower = text.lower()
@@ -63,8 +63,8 @@ class LLMParser:
         confidence = float(pred.get("confidence", 0.0))
         source_parts = ["tfidf_intent_classifier"]
 
-        # Delay language should take priority over ticket language if both appear.
-        # Example: "I want to go to Norwich but my train got delayed"
+        #Delay language should take priority over ticket language if both appear
+        #Example:I want to go to Norwich but my train got delayed
         if self.nlp.has_delay_language(text):
             if confidence < 0.90 or intent != "delay":
                 intent = "delay"
@@ -258,7 +258,7 @@ class LLMParser:
             extracted["return_date"] = inferred_return
             extracted["journey_type"] = "return"
 
-        # Safety: never return same station as origin and destination.
+        # Safety:never return same station as origin and destination.
         if (
             extracted.get("from_station")
             and extracted.get("to_station")
@@ -323,12 +323,7 @@ class LLMParser:
 
     @staticmethod
     def _clean_station_phrase(value: str) -> str:
-        """
-        Clean station phrase extracted by regex.
-
-        This prevents phrases like 'norwich but my train got delayed' being
-        treated as a station name.
-        """
+        #Clean station phrase extracted by regex.
         value = value.strip()
 
         cut_phrases = [

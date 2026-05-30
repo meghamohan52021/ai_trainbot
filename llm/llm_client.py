@@ -53,15 +53,13 @@ class LLMClient:
         prompt = self._build_prompt(text, current_state, local_context)
 
         if LLM_DEBUG:
-            print("\n" + "=" * 90)
             print("[LLM FALLBACK] Gemini is being used as a final structured NLU attempt.")
             print(f"[LLM FALLBACK] Model: {self.model}")
             print("[LLM FALLBACK] URL:", self._safe_url())
             print("[LLM FALLBACK] Prompt sent to Gemini:")
             print(prompt)
-            print("=" * 90 + "\n")
 
-        #Gemini REST API expects camelCase names, e.g. responseMimeType, not response_mime_type
+        #Gemini REST API expects camelCase names
         payload = {
             "contents": [
                 {
@@ -98,7 +96,6 @@ class LLMClient:
             if LLM_DEBUG:
                 print("\n[LLM FALLBACK] Raw Gemini response:")
                 print(raw_text)
-                print("-" * 90)
 
             parsed = self._parse_json_safely(raw_text)
             parsed = self._normalise_result(parsed)
@@ -108,7 +105,6 @@ class LLMClient:
             if LLM_DEBUG:
                 print("\n[LLM FALLBACK] Parsed Gemini JSON:")
                 print(json.dumps(parsed, indent=2))
-                print("-" * 90 + "\n")
 
             return parsed
 
@@ -116,7 +112,6 @@ class LLMClient:
             if LLM_DEBUG:
                 print("\n[LLM FALLBACK] Gemini fallback failed.")
                 print(f"[LLM FALLBACK] Error: {exc}")
-                print("-" * 90 + "\n")
             return {}
 
     def _build_prompt(self, text: str, current_state: dict, local_context: dict) -> str:

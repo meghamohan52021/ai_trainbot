@@ -52,13 +52,12 @@ def patch_adapters(bot: ConversationController) -> None:
 
 def run_scenario(scenario: Scenario, real_adapters: bool = False) -> bool:
     """
-    Runs one full conversation scenario and prints the transcript.
+    Runs one full conversation scenario and prints the transcript
     Returns True if the scenario completed without exceptions and the expected
     phrases were present.
     """
-    print("\n" + "=" * 90)
+    print("\n")
     print(f"SCENARIO: {scenario.name}")
-    print("=" * 90)
 
     bot = ConversationController()
 
@@ -100,11 +99,6 @@ def run_scenario(scenario: Scenario, real_adapters: bool = False) -> bool:
 
 
 def build_scenarios() -> List[Scenario]:
-    """
-    Add or edit scenarios here.
-
-    The inputs are exactly what a user would type into the chatbot.
-    """
 
     return [
         Scenario(
@@ -384,9 +378,7 @@ def main() -> int:
         else:
             failed += 1
 
-    print("\n" + "#" * 90)
-    print("SUMMARY")
-    print("#" * 90)
+    print("SUMMAR\nY")
     print(f"Passed: {passed}")
     print(f"Failed / check manually: {failed}")
     print(f"Total: {passed + failed}")

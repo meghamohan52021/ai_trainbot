@@ -46,7 +46,7 @@ class StationMatch:
 
 
 class StationMatcher:
-    # Words that commonly appear in station queries but are not part of station names, 
+    #Words that commonly appear in station queries but are not part of station names, 
     #cause false matches if not filtered out
 
     NON_STATION_WORDS = {
@@ -239,7 +239,7 @@ class StationMatcher:
                 reason="broad_or_strict_candidates",
             )
 
-        #Fuzzy matching ONLY for one-token typo correction.
+        #Fuzzy matching only for one-token typo correction.
         #Multi-word queries already used strict all-token matching to prevent unrelated fuzzy matches.
         query_tokens = self._query_tokens(query_norm)
         if allow_fuzzy and process and len(query_tokens) == 1 and len(query_norm) >= 4:

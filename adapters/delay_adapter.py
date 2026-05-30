@@ -81,7 +81,7 @@ class DelayPredictionAdapter:
             }
 
         except FileNotFoundError:
-            # Model not trained yet - still show delay repay based on current delay
+            # Model not trained yet-still show delay repay based on current delay
             delay_repay_msg = check_delay_repay(delay_minutes, "South Western Railway")
 
             return {

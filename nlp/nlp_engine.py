@@ -22,10 +22,10 @@ class NLPAnalysis:
 @lru_cache(maxsize=1)
 def load_spacy_model():
     """
-    Load a spaCy English model.
+    Load a spaCy model
 
     en_core_web_md is preferred because it includes word vectors for better
-    semantic similarity. If it is not installed, the code falls back to
+    semantic similarity. If not available, the code falls back to
     en_core_web_sm. The small model is still useful for tokenisation,
     lemmatisation and entity extraction, but semantic similarity is weaker.
     """
@@ -121,10 +121,7 @@ class SpacyNLPEngine:
         return None, best_score
 
     def contains_fuzzy_term(self, text: str, terms: set[str], threshold: int = 84) -> bool:
-        """
-        Detect misspelled trigger terms such as 'dalayyyed' ≈ 'delayed'.
-        This is only used for short intent trigger words, not station matching.
-        """
+        """Detect misspelled terms using spaCy tokens/lemmas plus fuzzy matching."""
         analysis = self.analyse(text)
         words = analysis.tokens + analysis.lemmas
 
@@ -135,10 +132,6 @@ class SpacyNLPEngine:
         return False
 
     def has_delay_language(self, text: str) -> bool:
-        """
-        Detect delay intent using spaCy tokens/lemmas plus fuzzy matching.
-        Examples: delayed, delay, late, lateness, running late, dalayyyed.
-        """
         delay_terms = {
             "delay", "delayed", "late", "lateness", "arrival", "arrive",
             "reached", "current", "minutes", "mins",
@@ -146,9 +139,6 @@ class SpacyNLPEngine:
         return self.contains_fuzzy_term(text, delay_terms, threshold=82)
 
     def has_ticket_language(self, text: str) -> bool:
-        """
-        Detect ticket/journey language using spaCy tokens/lemmas
-        """
         ticket_terms = {
             "ticket", "fare", "price", "cheap", "cheapest", "book", "booking",
             "travel", "journey", "train", "return", "single",

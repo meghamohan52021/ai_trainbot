@@ -221,7 +221,7 @@ small, .stTextInput + small {{ display: none !important; }}
     font-family: 'Instrument Sans', sans-serif;
 }}
 
-/* All Streamlit buttons get the black circle — covers both send buttons */
+/* All Streamlit buttons get the black circle covers both send buttons */
 .stButton > button {{
     width: 44px !important;
     height: 44px !important;

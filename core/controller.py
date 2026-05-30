@@ -556,7 +556,7 @@ class ConversationController:
             self.state.current_task = None
             self.state.ticket = JourneyState()
             self._clear_pending()
-            return f"Great — your journey details are complete.\n\n{result['message']}"
+            return f"Great your journey details are complete.\n\n{result['message']}"
 
         if answer in self.NO_WORDS or first_word in self.NO_WORDS:
             self.confirm_ticket = False
@@ -628,15 +628,15 @@ class ConversationController:
 
     def _ask_for_ticket_correction(self, slot: str) -> str:
         questions = {
-            "from_station": "Sure — what departure station should I use?",
-            "to_station": "Sure — what destination station should I use?",
-            "depart_date": "Sure — what date are you travelling? You can say 'tomorrow' or '15 July'.",
-            "depart_time_pref": "Sure — what departure time do you prefer? For example: 'morning', 'before 10am', or 'after 2pm'.",
-            "return_date": "Sure — what date are you coming back? You can also say 'open return' if the date is flexible.",
-            "return_time_pref": "Sure — what return time do you prefer? For example: 'after 2pm'.",
-            "journey_type": "Sure — is this a single or return journey?",
+            "from_station": "Sure what departure station should I use?",
+            "to_station": "Sure what destination station should I use?",
+            "depart_date": "Sure what date are you travelling? You can say 'tomorrow' or '15 July'.",
+            "depart_time_pref": "Sure what departure time do you prefer? For example: 'morning', 'before 10am', or 'after 2pm'.",
+            "return_date": "Sure what date are you coming back? You can also say 'open return' if the date is flexible.",
+            "return_time_pref": "Sure what return time do you prefer? For example: 'after 2pm'.",
+            "journey_type": "Sure is this a single or return journey?",
         }
-        return questions.get(slot, "Sure — what should I change it to?")
+        return questions.get(slot, "Sure what should I change it to?")
 
     def _update_specific_ticket_slot(self, slot: str, text: str) -> bool:
         lower = text.lower().strip()
@@ -761,7 +761,7 @@ class ConversationController:
             self.state.current_task = None
             self.state.delay = DelayState()
             self._clear_pending()
-            return f"Great — the delay details are complete.\n\n{result['message']}"
+            return f"Great the delay details are complete.\n\n{result['message']}"
 
         if answer in self.NO_WORDS or first_word in self.NO_WORDS:
             self.confirm_delay = False
@@ -788,11 +788,11 @@ class ConversationController:
 
     def _ask_for_delay_correction(self, slot: str) -> str:
         questions = {
-            "current_station": "Sure — which station has the train currently reached?",
-            "delay_minutes": "Sure — how many minutes is the train delayed?",
-            "destination": "Sure — what is your destination station?",
+            "current_station": "Sure which station has the train currently reached?",
+            "delay_minutes": "Sure how many minutes is the train delayed?",
+            "destination": "Sure what is your destination station?",
         }
-        return questions.get(slot, "Sure — what should I change it to?")
+        return questions.get(slot, "Sure what should I change it to?")
 
     def _update_specific_delay_slot(self, slot: str, text: str) -> bool:
         clean = text.strip()

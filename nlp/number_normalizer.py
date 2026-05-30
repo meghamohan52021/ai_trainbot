@@ -69,7 +69,7 @@ def extract_delay_minutes(text: str):
     if re.fullmatch(r"an\s+hour|a\s+hour|one\s+hour", text_lower):
         return 60
 
-    #Hours with optional minutes: '1 hour', '1 hour 15 minutes', 'two hours and ten minutes'
+    #Hours with optional minutes:1 hour,1 hour 15 minutes,etc
     hour_match = re.search(r"\b(\d+|[a-zA-Z\- ]+?)\s*(hour|hours|hr|hrs)\b", text_lower)
     minute_match = re.search(r"\b(\d+|[a-zA-Z\- ]+?)\s*(minute|minutes|min|mins)\b", text_lower)
 
@@ -96,7 +96,7 @@ def extract_delay_minutes(text: str):
     if found:
         return total
 
-    #Written number only, e.g. 'fifteen'
+    #Written number only like fifteen
     written = words_to_int(text_lower)
     if written is not None:
         return written

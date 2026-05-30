@@ -23,7 +23,7 @@ class JourneyState:
             "depart_time_pref",
         ]
         if self.journey_type == "return":
-            # "open" is a valid return_date value — user has chosen an open return
+            # "open" is a valid return_date value user has chosen an open return
             if self.return_date != "open":
                 needed.append("return_date")
         return [slot for slot in needed if getattr(self, slot) in (None, "", [])]

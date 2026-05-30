@@ -16,8 +16,8 @@ def now_london():
     return datetime.now(ZoneInfo(TIMEZONE))
 
 
-# Gemini fallback settings
-GEMINI_API_KEY = ""
+#Gemini fallback settings
+GEMINI_API_KEY = "Enter your Gemini API key"
 GEMINI_MODEL = "gemini-2.5-flash"
 
 GEMINI_API_URL = (
