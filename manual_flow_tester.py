@@ -6,7 +6,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Callable, Iterable, List, Optional
 
-from controller import ConversationController
+from core.controller import ConversationController
 
 
 @dataclass
