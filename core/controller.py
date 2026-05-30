@@ -107,7 +107,7 @@ class ConversationController:
         if not SHOW_LLM_TO_USER or not data.get("_llm_used"):
             return ""
         model = data.get("_llm_model", "Gemini")
-        return f"🤖 Gemini fallback used for one final understanding check ({model}).\n\n"
+        return f"Gemini fallback used for one final understanding check ({model}).\n\n"
 
     def _normalise_llm_station(self, value: Any) -> Optional[str]:
         if value in (None, "", []):
