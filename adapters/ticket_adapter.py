@@ -3,8 +3,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-RTJP_USERNAME = "wwang"
-RTJP_PASSWORD = "?i92S6"
+RTJP_USERNAME = ""
+RTJP_PASSWORD = ""
 RTJP_ENDPOINT = "https://ojp.nationalrail.co.uk/webservices/jpdlr"
 
 NS_SOAP = "http://schemas.xmlsoap.org/soap/envelope/"
